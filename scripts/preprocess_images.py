@@ -39,10 +39,10 @@ SOURCE_DIRS = {
 
 
 def process_one(args):
-    src, dst, size, use_clahe, clip = args
+    src, dst, size, use_clahe, clip, square_mode = args
     img, info = preprocess(src, size=size, use_clahe=use_clahe,
                            normalize=False, clip_limit=clip,
-                           quality_check=True)
+                           quality_check=True, square_mode=square_mode)
     if img is None:
         return src.stem, info.get("error", "bilinmeyen hata")
 
@@ -55,6 +55,9 @@ def main():
     ap.add_argument("--size", type=int, default=512)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--clip-limit", type=float, default=2.0)
+    ap.add_argument("--square-mode", choices=["squash", "pad"], default="squash",
+                    help="kareye getirme yontemi; squash siyah alani %28.5'ten "
+                         "%13.4'e indirir ve doku kaybettirmez")
     ap.add_argument("--no-clahe", action="store_true",
                     help="CLAHE'siz uret - karsilastirmanin kontrol grubu")
     ap.add_argument("--out", default=None,
@@ -73,11 +76,11 @@ def main():
         out_dir.mkdir(parents=True, exist_ok=True)
         for png in sorted(src_dir.glob("*.png")):
             jobs.append((png, out_dir / f"{png.stem}.jpg", args.size,
-                         use_clahe, args.clip_limit))
+                         use_clahe, args.clip_limit, args.square_mode))
 
     print(f"{len(jobs)} goruntu, {args.size}x{args.size}, "
           f"CLAHE {'acik (clip=' + str(args.clip_limit) + ')' if use_clahe else 'KAPALI'}, "
-          f"{args.workers} surec")
+          f"kare={args.square_mode}, {args.workers} surec")
     print(f"cikti: {out_root}")
 
     failures, done = [], 0
