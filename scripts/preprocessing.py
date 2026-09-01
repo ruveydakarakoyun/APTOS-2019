@@ -149,8 +149,32 @@ def dhash(img, size=8):
 
 # ------------------------------------------------------------------ boru hatti
 
+def to_square(img, size, mode="squash"):
+    """Goruntuyu kare cikti boyutuna getirir.
+
+    APTOS goruntulerinin geometrisi olculdu: retina dairesi ustten (%75) ve
+    alttan (%52) sensor cercevesiyle kesiliyor, yanlardan asla. Yani kirpilmis
+    goruntu dogal olarak genis (en-boy medyani 1.27) ve zaten %86.5 retina.
+
+      pad    : kareye siyah bant ekler. En-boy orani korunur ama 512px ciktinin
+               %28.5'i siyah olur - eklenen bantlar zaten var olan kose
+               bosluklarinin ustune biner.
+      squash : dogrudan yeniden boyutlandirir. Yatayda ~1.27x sikisma olur ama
+               bu tum goruntulerde tutarlidir ve hicbir doku kaybedilmez.
+               Siyah alan %13.4'e duser, etkin retina pikseli %21 artar.
+
+    Merkez kare kirpma da denendi: siyahi %6.2'ye indiriyor ama retinanin
+    %10.6'sini atiyor. Periferik lezyonlar onemli oldugu icin tercih edilmedi.
+    """
+    if mode == "pad":
+        img = pad_to_square(img)
+    elif mode != "squash":
+        raise ValueError(f"bilinmeyen square_mode: {mode}")
+    return cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA)
+
+
 def preprocess(path, size=512, use_clahe=True, normalize=False,
-               clip_limit=2.0, quality_check=True):
+               clip_limit=2.0, quality_check=True, square_mode="squash"):
     """Tam boru hatti: oku -> kalite -> crop -> CLAHE -> resize -> normalize.
 
     path: goruntu dosyasi
@@ -184,7 +208,7 @@ def preprocess(path, size=512, use_clahe=True, normalize=False,
     if use_clahe:
         img = apply_clahe(img, clip_limit=clip_limit)
 
-    img = cv2.resize(pad_to_square(img), (size, size), interpolation=cv2.INTER_AREA)
+    img = to_square(img, size, mode=square_mode)
 
     if normalize:
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
