@@ -50,7 +50,8 @@ python scripts/load_to_bigquery.py --project datascientis --dataset APTOS_2019 \
 # 3. Goruntu ozelliklerini tara -> BigQuery
 python scripts/scan_images.py
 
-# 4. Veri kalite raporu ve duplicate analizi
+# 4. Raporlar: goruntu ozellikleri, veri kalitesi, duplicate analizi
+python scripts/image_report.py
 python scripts/quality_report.py
 
 # 5. Goruntuleri hazirla
@@ -107,6 +108,7 @@ sik goruleni 1050x1050 (974 goruntu).
 
 ![Goruntu ozellikleri](reports/figures/06_image_properties.png)
 
+Goruntu ozellikleri ozeti: [`reports/image_properties.md`](reports/image_properties.md).
 Ayrintili kalite raporu: [`reports/data_quality.md`](reports/data_quality.md).
 Problemli goruntu listesi: [`reports/problem_images.csv`](reports/problem_images.csv).
 
@@ -153,6 +155,7 @@ scripts/
   prepare_bq_csv.py      etiket CSV'lerini temizler ve zenginlestirir
   load_to_bigquery.py    etiketleri BigQuery'ye yukler
   scan_images.py         goruntu ozelliklerini tarar -> BigQuery
+  image_report.py        goruntu ozellikleri ozeti
   quality_report.py      kalite raporu + duplicate analizi
   preprocess_images.py   goruntuleri egitime hazirlar
   make_figures.py        rapor gorselleri
