@@ -1,0 +1,16 @@
+# Jupyter & Python
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+
+# GCP Keys & Sensitive Data
+*.json
+gcp_key.json
+
+# Image & Data formats
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.pth
+*.h5
