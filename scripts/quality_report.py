@@ -16,10 +16,14 @@ Kullanim:
 """
 import argparse
 import pathlib
+import sys
 
 import cv2
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from preprocessing import HARD_BRIGHT, HARD_DARK, brightness_outliers  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 STATS = ROOT / "data" / "bq" / "image_stats.csv"
@@ -84,8 +88,12 @@ def _verify_duplicates(candidates):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dark", type=float, default=12.0)
-    ap.add_argument("--bright", type=float, default=240.0)
+    ap.add_argument("--dark", type=float, default=HARD_DARK,
+                    help="bu degerin altindaki goruntu kullanilamaz sayilir")
+    ap.add_argument("--bright", type=float, default=HARD_BRIGHT,
+                    help="bu degerin ustundeki goruntu kullanilamaz sayilir")
+    ap.add_argument("--mad-k", type=float, default=3.5,
+                    help="parlaklik ucdegeri icin MAD katsayisi")
     args = ap.parse_args()
 
     if not STATS.exists():
@@ -128,22 +136,48 @@ def main():
         md.append(f"- Islenmis klasorde eksik: **{len(lab_ids - proc)}**\n")
 
     # ------------------------------------------------------- parlaklik uclari
+    # Iki ayri soru, iki ayri olcut:
+    #   1) Goruntu kullanilabilir mi?  -> sabit esikler (neredeyse siyah/beyaz)
+    #   2) Dagilimdan sapiyor mu?      -> MAD tabanli ucdeger tespiti
+    # Sabit esik tek basina yaniltici: fundus fotograflari dogasi geregi koyu,
+    # bu veri setinde parlaklik 130'u hic gecmiyor. Genel amacli bir "asiri
+    # parlak" esigi burada hicbir zaman tetiklenmez ve "0 sorun" raporu bir sey
+    # olcmedigi icin 0 cikar.
     dark = ok[ok.brightness < args.dark]
     bright = ok[ok.brightness > args.bright]
+    outlier_mask = brightness_outliers(ok.brightness.values, k=args.mad_k)
+    outliers = ok[outlier_mask]
+
     md.append(section("Parlaklik kontrolu"))
-    md.append(f"- Esikler: karanlik `< {args.dark}`, parlak `> {args.bright}`\n")
-    md.append(f"- Asiri karanlik: **{len(dark)}**\n")
-    md.append(f"- Asiri parlak: **{len(bright)}**\n")
-    md.append(f"- Parlaklik araligi: {ok.brightness.min():.1f} - {ok.brightness.max():.1f}"
-              f" (ortalama {ok.brightness.mean():.1f})\n")
-    md.append(f"- En dusuk %1: {ok.brightness.quantile(0.01):.1f}, "
-              f"en yuksek %1: {ok.brightness.quantile(0.99):.1f}\n")
+    md.append("Iki ayri olcut kullaniliyor: kullanilabilirlik icin sabit esikler, "
+              "olagandisilik icin dagilim tabanli ucdeger tespiti.\n\n")
+    md.append(f"| olcut | esik | isaretlenen |\n|---|---|---|\n")
+    md.append(f"| Kullanilamayacak kadar karanlik | `< {args.dark}` | {len(dark)} |\n")
+    md.append(f"| Kullanilamayacak kadar parlak | `> {args.bright}` | {len(bright)} |\n")
+    md.append(f"| Dagilim ucdegeri | MAD, k={args.mad_k} | {len(outliers)} |\n")
+    md.append(f"\n- Parlaklik araligi: {ok.brightness.min():.1f} - "
+              f"{ok.brightness.max():.1f} (medyan {ok.brightness.median():.1f})\n")
+    md.append(f"- Kontrast (std) araligi: {ok.contrast_std.min():.1f} - "
+              f"{ok.contrast_std.max():.1f} (medyan {ok.contrast_std.median():.1f})\n")
+
+    if len(outliers) == 0:
+        md.append("\nMAD ucdegeri bulunmadi. Bu anlamli bir sifir: olcut verinin "
+                  "kendi olcegine gore calisiyor, dolayisiyla parlaklik dagiliminda "
+                  "gercekten sapan bir goruntu yok demektir.\n")
+    else:
+        md.append("\n| id_code | split | parlaklik |\n|---|---|---|\n")
+        for _, r in outliers.iterrows():
+            md.append(f"| {r.id_code} | {r.split} | {r.brightness:.1f} |\n")
+
     for _, r in dark.iterrows():
         problems.append({"id_code": r.id_code, "split": r.split,
                          "sorun": "asiri karanlik", "deger": r.brightness})
     for _, r in bright.iterrows():
         problems.append({"id_code": r.id_code, "split": r.split,
                          "sorun": "asiri parlak", "deger": r.brightness})
+    for _, r in outliers.iterrows():
+        problems.append({"id_code": r.id_code, "split": r.split,
+                         "sorun": "parlaklik ucdegeri", "deger": r.brightness})
 
     # düşük kontrast - CLAHE'nin en cok fayda saglayacagi goruntuler
     low_c = ok[ok.contrast_std < ok.contrast_std.quantile(0.02)]
@@ -202,8 +236,9 @@ def main():
               f"| Okunamayan goruntu | {len(unreadable)} |\n"
               f"| Etiketi olmayan goruntu | {len(only_img)} |\n"
               f"| Goruntusu olmayan etiket | {len(only_lab)} |\n"
-              f"| Asiri karanlik | {len(dark)} |\n"
-              f"| Asiri parlak | {len(bright)} |\n"
+              f"| Kullanilamayacak kadar karanlik | {len(dark)} |\n"
+              f"| Kullanilamayacak kadar parlak | {len(bright)} |\n"
+              f"| Parlaklik ucdegeri (MAD k={args.mad_k}) | {len(outliers)} |\n"
               f"| Duplicate grup (dogrulanmis) | {n_groups} |\n"
               f"| Split'ler arasi duplicate | {cross} |\n")
 
@@ -212,9 +247,18 @@ def main():
     prob_df = pd.DataFrame(problems, columns=["id_code", "split", "sorun", "deger"])
     prob_df.to_csv(REPORTS / "problem_images.csv", index=False)
 
+    # Egitimden cikarilmasi gereken id'ler: valid veya test'te birebir kopyasi
+    # olanlar. Egitim tarafini duserek degerlendirme kumeleri bozulmadan kalir.
+    leaked = sorted({id_code for members, splits in confirmed
+                     if len(splits) > 1
+                     for id_code, split in members if split == "train"})
+    pd.DataFrame({"id_code": leaked}).to_csv(REPORTS / "leaked_train_ids.csv",
+                                             index=False)
+
     print("".join(md))
     print(f"\n-> {REPORTS / 'data_quality.md'}")
     print(f"-> {REPORTS / 'problem_images.csv'}  ({len(prob_df)} satir)")
+    print(f"-> {REPORTS / 'leaked_train_ids.csv'}  ({len(leaked)} egitim goruntusu)")
 
 
 if __name__ == "__main__":

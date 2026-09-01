@@ -80,8 +80,18 @@ def apply_clahe(img, clip_limit=2.0, tile_grid=(8, 8)):
 
 # ----------------------------------------------------- 3. kisi: kalite kontrol
 
-def image_quality(img, dark_threshold=12.0, bright_threshold=240.0):
-    """Goruntunun temel kalite olculeri ve gecip gecmedigi.
+# Kullanilamaz goruntu esikleri. Bunlar "olagandisi" degil "bilgi tasimiyor"
+# esikleridir: neredeyse tamamen siyah bir kare veya asiri pozlanmis beyaz bir
+# kare. Veri setinde olculen aralik 15.0-129.6 oldugu icin bu esikler pratikte
+# hicbir goruntuyu elemiyor - bu bir kusur degil, verinin temiz oldugunun
+# gostergesi. Olagandisi ama kullanilabilir goruntuleri yakalamak icin
+# brightness_outliers() kullanin.
+HARD_DARK = 8.0
+HARD_BRIGHT = 250.0
+
+
+def image_quality(img, dark_threshold=HARD_DARK, bright_threshold=HARD_BRIGHT):
+    """Goruntunun temel kalite olculeri ve kullanilabilir olup olmadigi.
 
     Doner: (gecti_mi, olculer sozlugu)
     """
@@ -96,6 +106,32 @@ def image_quality(img, dark_threshold=12.0, bright_threshold=240.0):
     }
     metrics["ok"] = not (metrics["too_dark"] or metrics["too_bright"])
     return metrics["ok"], metrics
+
+
+def brightness_outliers(values, k=3.5):
+    """Dagilimdan sapan goruntuleri medyan mutlak sapma (MAD) ile isaretler.
+
+    Sabit esik yerine bunu kullanmanin sebebi: fundus fotograflari dogasi geregi
+    koyu, dolayisiyla genel amacli bir "asiri karanlik" esigi ya hicbir seyi
+    eler ya da her seyi. MAD medyana gore olctugu icin verinin kendi olcegine
+    uyum saglar ve ucdegerlerden etkilenmez (standart sapmanin aksine).
+
+    Yuzdelik tabanli bir esikten farki onemli: yuzdelik her zaman sabit bir
+    oran isaretler, veri tamamen temiz olsa bile. MAD ise gercekten sapan bir
+    sey yoksa hicbir sey isaretlemez.
+
+    values: parlaklik degerleri dizisi
+    k: kac MAD uzaklik ucdeger sayilir (3.5 yaygin secim)
+
+    Doner: her deger icin bool dizi (True = ucdeger)
+    """
+    v = np.asarray(values, dtype=float)
+    median = np.median(v)
+    mad = np.median(np.abs(v - median))
+    if mad == 0:
+        return np.zeros(len(v), dtype=bool)
+    # 0.6745 carpani MAD'i normal dagilimda standart sapmaya denk hale getirir
+    return np.abs(0.6745 * (v - median) / mad) > k
 
 
 def dhash(img, size=8):

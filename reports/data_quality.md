@@ -9,8 +9,9 @@ Kaynak: 3662 taranan goruntu, 3662 etiket satiri.
 | Okunamayan goruntu | 0 |
 | Etiketi olmayan goruntu | 0 |
 | Goruntusu olmayan etiket | 0 |
-| Asiri karanlik | 0 |
-| Asiri parlak | 0 |
+| Kullanilamayacak kadar karanlik | 0 |
+| Kullanilamayacak kadar parlak | 0 |
+| Parlaklik ucdegeri (MAD k=3.5) | 0 |
 | Duplicate grup (dogrulanmis) | 131 |
 | Split'ler arasi duplicate | 48 |
 
@@ -27,11 +28,18 @@ Kaynak: 3662 taranan goruntu, 3662 etiket satiri.
 
 ## Parlaklik kontrolu
 
-- Esikler: karanlik `< 12.0`, parlak `> 240.0`
-- Asiri karanlik: **0**
-- Asiri parlak: **0**
-- Parlaklik araligi: 15.0 - 129.6 (ortalama 66.8)
-- En dusuk %1: 23.4, en yuksek %1: 103.0
+Iki ayri olcut kullaniliyor: kullanilabilirlik icin sabit esikler, olagandisilik icin dagilim tabanli ucdeger tespiti.
+
+| olcut | esik | isaretlenen |
+|---|---|---|
+| Kullanilamayacak kadar karanlik | `< 8.0` | 0 |
+| Kullanilamayacak kadar parlak | `> 250.0` | 0 |
+| Dagilim ucdegeri | MAD, k=3.5 | 0 |
+
+- Parlaklik araligi: 15.0 - 129.6 (medyan 69.0)
+- Kontrast (std) araligi: 9.6 - 75.8 (medyan 40.1)
+
+MAD ucdegeri bulunmadi. Bu anlamli bir sifir: olcut verinin kendi olcegine gore calisiyor, dolayisiyla parlaklik dagiliminda gercekten sapan bir goruntu yok demektir.
 - En dusuk %2 kontrast (74 goruntu): std < 18.6 - CLAHE'nin en cok fayda saglayacagi grup
 
 ## Duplicate goruntuler
