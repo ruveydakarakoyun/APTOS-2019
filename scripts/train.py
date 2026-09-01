@@ -194,6 +194,9 @@ def main():
                     help="split basina goruntu siniri - sadece hizli deneme icin")
     ap.add_argument("--data-dir", default=None,
                     help="islenmis goruntu klasoru; verilmezse data/processed")
+    ap.add_argument("--exclude-leaked", action="store_true",
+                    help="valid/test'te kopyasi olan egitim goruntulerini disla "
+                         "(reports/leaked_train_ids.csv)")
     ap.add_argument("--variant", default=None,
                     help="kosu etiketi, orn. clahe / baseline")
     ap.add_argument("--author", default="senanur")
@@ -215,6 +218,19 @@ def main():
     print(f"veri: {data_root}  (variant={variant})")
 
     df = load_labels()
+
+    # Split'ler arasi duplicate: ayni goruntu hem egitimde hem degerlendirmede
+    # varsa test sonucu iyimser cikar. Egitim tarafini duseriz - degerlendirme
+    # kumeleri boylece bozulmadan kalir ve kosular karsilastirilabilir olur.
+    if args.exclude_leaked:
+        leak_file = ROOT / "reports" / "leaked_train_ids.csv"
+        if not leak_file.exists():
+            raise SystemExit(f"{leak_file} yok - once scripts/quality_report.py calistirin")
+        leaked = set(pd.read_csv(leak_file).id_code)
+        before = len(df)
+        df = df[~((df.split == "train") & (df.id_code.isin(leaked)))].reset_index(drop=True)
+        print(f"sizinti temizligi: {before - len(df)} egitim goruntusu dislandi")
+
     if args.limit:
         df = (df.sample(frac=1, random_state=args.seed)
                 .groupby("split", group_keys=False).head(args.limit).reset_index(drop=True))
@@ -315,7 +331,7 @@ def main():
             "accuracy": float((true == pred).mean()),
             "macro_f1": float(f1_score(true, pred, average="macro", zero_division=0)),
             "n": int(len(true)), "epochs": son_epoch, "best_epoch": best_epoch,
-            "variant": variant,
+            "variant": variant, "leak_excluded": bool(args.exclude_leaked),
             "img_size": args.size,
             "seed": args.seed,
             "created_at": created,
@@ -325,7 +341,13 @@ def main():
               f"macro_F1={f1_score(true, pred, average='macro', zero_division=0):.4f}")
         print(confusion_matrix(true, pred, labels=range(5)))
 
-    if not args.no_bq:
+    # --limit bir duman testidir; sonuclari gercek kosularla ayni tabloya
+    # yazmak karsilastirmalari kirletir. Yazmak icin --no-bq'yu kaldirmak
+    # yetmez, --limit'i de kaldirmak gerekir.
+    if args.limit:
+        print("\n--limit etkin: sonuclar BigQuery'ye YAZILMADI "
+              "(duman testi gercek kosularla ayni tabloya girmesin diye).")
+    elif not args.no_bq:
         print("\nBigQuery'ye yaziliyor...")
         try:
             write_to_bigquery(run_id, pd.concat(pred_rows, ignore_index=True),
