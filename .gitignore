@@ -1,0 +1,29 @@
+# Kimlik bilgileri - asla commit etmeyin
+*.json
+!dataset-metadata.json
+
+# Veri (yeniden uretilebilir, buyuk)
+data/
+*.pth
+*.pt
+models/
+
+# Ham ve islenmis goruntuler
+*.jpeg
+*.tif
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Genel gorseller ve tablolar surum kontrolu disinda...
+*.png
+*.jpg
+*.csv
+
+# ...ancak rapor ciktilarini tutuyoruz - bunlar teslim edilen is
+!reports/figures/*.png
+!reports/*.csv
