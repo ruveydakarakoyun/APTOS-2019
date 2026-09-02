@@ -94,7 +94,19 @@ def main():
             if done % 500 == 0:
                 print(f"  {done}/{len(jobs)}")
 
+    # Kunye: bu klasorun hangi ayarlarla uretildigi. train.py ve train_cv.py
+    # bunu okuyup basar, boylece bir kosunun hangi on islemeyle yapildigi
+    # kayitli kalir.
+    (out_root / "_manifest.json").write_text(json.dumps({
+        "size": args.size,
+        "clahe": use_clahe,
+        "clip_limit": args.clip_limit if use_clahe else None,
+        "square_mode": args.square_mode,
+        "n_images": done - len(failures),
+    }, indent=2), encoding="utf-8")
+
     print(f"\nbitti: {done - len(failures)} basarili, {len(failures)} atlandi")
+    print(f"kunye: {out_root / '_manifest.json'}")
     for stem, err in failures[:20]:
         print(f"  {stem}: {err}")
     if len(failures) > 20:
