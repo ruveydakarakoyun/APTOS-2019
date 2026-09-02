@@ -177,7 +177,11 @@ scripts/
   quality_report.py      kalite raporu + duplicate analizi
   preprocess_images.py   goruntuleri egitime hazirlar
   make_figures.py        rapor gorselleri
-  train.py               egitim + degerlendirme -> BigQuery
+  train.py               egitim + degerlendirme -> BigQuery (tek split)
+  train_cv.py            K katli capraz dogrulama -> BigQuery
+  run_seeds.sh           coklu seed karsilastirmasi
+  run_cv.sh              iki varyant icin 5 katli CV
+  run_squash_cv.sh       squash dogrulamasi (CV bitince zincirlenir)
   confound_analysis.py   kisayol ozelligi ve etiket gurultusu analizi
   analyze_runs.py        kosu karsilastirmasi ve hata analizi
 
