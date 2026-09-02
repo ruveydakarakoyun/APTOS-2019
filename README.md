@@ -58,8 +58,9 @@ python scripts/quality_report.py
 python scripts/preprocess_images.py --size 512              # CLAHE'li
 python scripts/preprocess_images.py --size 512 --no-clahe   # kontrol grubu
 
-# 6. Gorseller
+# 6. Gorseller ve kisayol analizi
 python scripts/make_figures.py
+python scripts/confound_analysis.py
 
 # 7. Egit
 python scripts/train.py --mode reg --epochs 30 --patience 5 \
@@ -129,7 +130,24 @@ Accuracy ve macro F1 de raporlanir. QWK ile macro F1'i birlikte okumak sart:
 QWK komsu hatalari hafif cezalandirdigi icin, azinlik siniflarindaki zayiflik
 yalnizca macro F1'de gorunur.
 
+## Testler
+
+```bash
+python tests/test_preprocessing.py    # pytest gerekmez
+```
+
+Sentetik goruntuler kullanir, veri seti indirilmemis makinede de calisir.
+
 ## Bilinmesi gerekenler
+
+- **Meta-veri kisayolu var.** Yalnizca dosya ozelliklerinden egitilen bir model,
+  retinaya hic bakmadan QWK 0.652 aliyor (1050x1050 goruntulerin %92.5'i No DR).
+  Rapor edilen skorlar bu tabanla birlikte okunmali. Ayrinti:
+  [`reports/confounds_and_noise.md`](reports/confounds_and_noise.md).
+- **Etiket gurultusu ~%16.** Duplicate ciftlerin %29.1'inde etiketler celisiyor;
+  tek etiketin dogru olma tahmini ~%84. Model bu tavana yakin.
+- **Islenmis klasorlerde `_manifest.json` var.** Hangi ayarlarla uretildigini
+  kaydeder; `train.py` bunu okuyup basar.
 
 - **Duplicate goruntuler var.** 131 dogrulanmis grup, 48'i split'ler arasi.
   Test goruntulerinin %6'sinin egitimde bir kopyasi var. Olculdu: bu kopyalarin
@@ -160,7 +178,11 @@ scripts/
   preprocess_images.py   goruntuleri egitime hazirlar
   make_figures.py        rapor gorselleri
   train.py               egitim + degerlendirme -> BigQuery
+  confound_analysis.py   kisayol ozelligi ve etiket gurultusu analizi
   analyze_runs.py        kosu karsilastirmasi ve hata analizi
+
+tests/
+  test_preprocessing.py  ortak modulun 31 testi (sentetik goruntulerle)
 
 reports/
   data_quality.md        veri kalite raporu

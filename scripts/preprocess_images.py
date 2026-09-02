@@ -19,6 +19,7 @@ Kullanim:
     python scripts/preprocess_images.py --size 512 --no-clahe    # kontrol grubu
 """
 import argparse
+import json
 import pathlib
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
