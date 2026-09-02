@@ -7,6 +7,7 @@ Uretilenler (reports/figures/ altina):
   04_clahe_<evre>.png          CLAHE oncesi/sonrasi, her evreden bir ornek
   05_pipeline_stages.png       boru hattinin alti asamasi tek gorselde
   06_image_properties.png      cozunurluk, en-boy orani, parlaklik dagilimlari
+  07_resolution_confound.png   cozunurluk-sinif kisayol iliskisi
 
 Kullanim:
     python scripts/make_figures.py
@@ -23,7 +24,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from preprocessing import apply_clahe, auto_crop, pad_to_square  # noqa: E402
+from preprocessing import apply_clahe, auto_crop, to_square  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FIG = ROOT / "reports" / "figures"
@@ -192,19 +193,22 @@ def fig_pipeline(samples):
     if raw is None:
         return
 
+    def siyah_oran(im):
+        return (cv2.cvtColor(im, cv2.COLOR_BGR2GRAY) <= 7).mean() * 100
+
     cropped = auto_crop(raw)
     enhanced = apply_clahe(cropped)
-    squared = pad_to_square(enhanced)
-    resized = cv2.resize(squared, (512, 512), interpolation=cv2.INTER_AREA)
-    norm = (cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    squashed = to_square(enhanced, 512, mode="squash")
+    padded = to_square(enhanced, 512, mode="pad")
+    norm = (cv2.cvtColor(squashed, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
             - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
 
     stages = [
         (bgr2rgb(raw), f"1. Oku\n{raw.shape[1]}x{raw.shape[0]}"),
-        (bgr2rgb(cropped), f"2. Auto-crop\n{cropped.shape[1]}x{cropped.shape[0]}"),
-        (bgr2rgb(enhanced), "3. CLAHE\nkontrast artirildi"),
-        (bgr2rgb(squared), f"4. Kare\n{squared.shape[1]}x{squared.shape[0]}"),
-        (bgr2rgb(resized), "5. Resize\n512x512"),
+        (bgr2rgb(cropped), f"2. Kalite + auto-crop\n{cropped.shape[1]}x{cropped.shape[0]}"),
+        (bgr2rgb(enhanced), "3. CLAHE\nLAB-L kanali"),
+        (bgr2rgb(padded), f"(pad ile olsaydi)\nsiyah %{siyah_oran(padded):.0f}"),
+        (bgr2rgb(squashed), f"4-5. Squash + resize\n512x512, siyah %{siyah_oran(squashed):.0f}"),
         (np.clip((norm - norm.min()) / (norm.max() - norm.min()), 0, 1),
          "6. Normalizasyon\nImageNet ort/std"),
     ]
@@ -250,6 +254,53 @@ def fig_image_properties(stats):
     plt.close(fig)
 
 
+def fig_confound(stats, labels):
+    """Cozunurluk ile sinif arasindaki kisayol iliskisi.
+
+    Bu grafik projenin en onemli bulgusunu gosteriyor: 1050x1050 goruntuler
+    neredeyse tamamen No DR. Model retinaya bakmadan bile bu iliskiden
+    faydalanabilir.
+    """
+    m = stats[stats.readable].merge(labels[["id_code", "diagnosis"]], on="id_code")
+    sq = m[(m.width == 1050) & (m.height == 1050)]
+    rest = m[~((m.width == 1050) & (m.height == 1050))]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4.4))
+
+    x = np.arange(5)
+    w = 0.38
+    a = [(sq.diagnosis == g).mean() * 100 for g in range(5)]
+    b = [(rest.diagnosis == g).mean() * 100 for g in range(5)]
+    ax1.bar(x - w / 2, a, w, label=f"1050x1050  (n={len(sq)})", color="#B91C1C")
+    ax1.bar(x + w / 2, b, w, label=f"diger cozunurlukler  (n={len(rest)})", color="#0F766E")
+    for i, (va, vb) in enumerate(zip(a, b)):
+        ax1.text(i - w / 2, va + 1.5, f"{va:.0f}", ha="center", fontsize=8.5)
+        ax1.text(i + w / 2, vb + 1.5, f"{vb:.0f}", ha="center", fontsize=8.5)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([f"{i}\n{GRADES[i].split()[0]}" for i in range(5)], fontsize=8.5)
+    ax1.set_ylabel("split icindeki oran (%)")
+    ax1.set_title("Cozunurluk sinifi belli ediyor")
+    ax1.legend(frameon=False, fontsize=9)
+    ax1.margins(y=0.15)
+
+    # megapiksel dagilimi, sinif bazinda
+    data = [m[m.diagnosis == g].megapixels.values for g in range(5)]
+    bp = ax2.boxplot(data, patch_artist=True, widths=0.6,
+                     medianprops=dict(color="white", linewidth=1.5))
+    for patch, c in zip(bp["boxes"], COLORS):
+        patch.set_facecolor(c)
+    ax2.set_xticklabels([f"{i}" for i in range(5)])
+    ax2.set_xlabel("ICDRSS evresi")
+    ax2.set_ylabel("megapiksel")
+    ax2.set_title("Goruntu boyutu evreye gore degisiyor")
+
+    fig.suptitle("Meta-veri kisayolu: retinaya bakmadan QWK 0.652",
+                 fontsize=13, y=1.02)
+    fig.tight_layout()
+    fig.savefig(FIG / "07_resolution_confound.png", bbox_inches="tight")
+    plt.close(fig)
+
+
 def main():
     FIG.mkdir(parents=True, exist_ok=True)
     labels = pd.read_csv(LABELS)
@@ -269,10 +320,13 @@ def main():
     fig_pipeline(samples)
 
     if STATS.exists():
+        stats = pd.read_csv(STATS)
         print("goruntu ozellikleri...")
-        fig_image_properties(pd.read_csv(STATS))
+        fig_image_properties(stats)
+        print("cozunurluk kisayolu...")
+        fig_confound(stats, labels)
     else:
-        print("image_stats.csv yok - 06 atlandi (once scan_images.py)")
+        print("image_stats.csv yok - 06 ve 07 atlandi (once scan_images.py)")
 
     files = sorted(FIG.glob("*.png"))
     print(f"\n{len(files)} gorsel -> {FIG}")

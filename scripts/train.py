@@ -17,6 +17,7 @@ Kullanim:
 """
 import argparse
 import datetime as dt
+import json
 import pathlib
 import random
 import uuid
@@ -215,7 +216,16 @@ def main():
     if not data_root.exists():
         raise SystemExit(f"{data_root} yok - once scripts/preprocess_images.py calistirin")
     variant = args.variant or ("clahe" if "clahe" in data_root.name else "baseline")
-    print(f"veri: {data_root}  (variant={variant})")
+    manifest = data_root / "_manifest.json"
+    if manifest.exists():
+        mf = json.loads(manifest.read_text(encoding="utf-8"))
+        print(f"veri: {data_root}  (variant={variant})")
+        print(f"  on isleme: {mf['size']}px, CLAHE={mf['clahe']}, "
+              f"kare={mf.get('square_mode', '?')}, {mf['n_images']} goruntu")
+    else:
+        print(f"veri: {data_root}  (variant={variant})")
+        print("  UYARI: _manifest.json yok - bu klasorun hangi on islemeyle "
+              "uretildigi bilinmiyor. preprocess_images.py'yi yeniden calistirin.")
 
     df = load_labels()
 
