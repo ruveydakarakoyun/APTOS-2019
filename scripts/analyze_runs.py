@@ -1,12 +1,11 @@
-"""Egitim kosularini BigQuery uzerinden karsilastirir ve hata analizi yapar.
+"""Compare training runs and analyse errors, reading from BigQuery.
 
-train.py her kosuyu aptos_predictions / aptos_metrics tablolarina yazar. Bu script
-o tablolari okur; boylece Colab'da ve yerelde yapilan kosular ayni yerden
-karsilastirilir.
+train.py and train_cv.py write every run to aptos_predictions / aptos_metrics,
+so runs from Colab and from a local GPU are compared from the same place.
 
-Kullanim:
-    python scripts/analyze_runs.py                 # tum kosulari listele
-    python scripts/analyze_runs.py --run 3f9a2b1c  # tek kosuyu incele
+Usage:
+    python scripts/analyze_runs.py                 # list every run
+    python scripts/analyze_runs.py --run 3f9a2b1c  # drill into one run
 """
 import argparse
 
@@ -25,22 +24,23 @@ def q(sql):
 
 
 def leaderboard():
-    """Tum kosular, valid QWK'ya gore sirali."""
+    """Every run, ordered by validation QWK."""
     df = q("""
-        SELECT run_id, author, model, mode, img_size, epochs, seed,
+        SELECT run_id, author, model, mode, IFNULL(variant, 'baseline') AS variant,
+               img_size, epochs, seed,
                MAX(IF(split='valid', qwk, NULL))      AS valid_qwk,
                MAX(IF(split='test',  qwk, NULL))      AS test_qwk,
                MAX(IF(split='valid', accuracy, NULL)) AS valid_acc,
                MAX(IF(split='valid', macro_f1, NULL)) AS valid_f1,
                MAX(created_at) AS created_at
         FROM `{p}.{d}.aptos_metrics`
-        GROUP BY run_id, author, model, mode, img_size, epochs, seed
+        GROUP BY run_id, author, model, mode, variant, img_size, epochs, seed
         ORDER BY valid_qwk DESC
     """)
     if df.empty:
-        print("henuz kayitli kosu yok")
+        print("no runs recorded yet")
         return df
-    print("=== KOSULAR (valid QWK'ya gore) ===")
+    print("=== RUNS (by validation QWK) ===")
     print(df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
     return df
 
@@ -57,13 +57,13 @@ def confusion(run_id, split):
     m = (df.pivot(index="y_true", columns="y_pred", values="n")
            .reindex(index=range(5), columns=range(5), fill_value=0)
            .fillna(0).astype(int))
-    m.index = [f"gercek {g}" for g in GRADES]
-    m.columns = [f"tah.{i}" for i in range(5)]
+    m.index = [f"true {g}" for g in GRADES]
+    m.columns = [f"pred {i}" for i in range(5)]
     return m
 
 
 def per_class(run_id, split):
-    """Sinif bazli duyarlilik ve en sik karistirildigi sinif."""
+    """Per-class recall, and which class each is most often confused with."""
     df = q(f"""
         SELECT y_true, y_pred, COUNT(*) n
         FROM `{{p}}.{{d}}.aptos_predictions`
@@ -80,29 +80,28 @@ def per_class(run_id, split):
         wrong = sub[sub.y_pred != grade]
         worst = wrong.loc[wrong.n.idxmax()] if not wrong.empty else None
         rows.append({
-            "sinif": f"{grade} {GRADES[grade]}",
+            "class": f"{grade} {GRADES[grade]}",
             "n": int(total),
-            "duyarlilik": round(correct / total, 3),
-            "en_cok_karisti": (f"{int(worst.y_pred)} ({int(worst.n)})"
-                               if worst is not None else "-"),
+            "recall": round(correct / total, 3),
+            "confused_with": (f"{int(worst.y_pred)} ({int(worst.n)})"
+                              if worst is not None else "-"),
         })
     return pd.DataFrame(rows)
 
 
-def severe_missed(run_id):
-    """Klinik olarak en pahali hata: ciddi DR'yi saglam sanmak."""
-    df = q(f"""
+def missed_severe(run_id):
+    """The clinically costly error: calling advanced DR healthy."""
+    return q(f"""
         SELECT split, COUNT(*) n
         FROM `{{p}}.{{d}}.aptos_predictions`
         WHERE run_id = '{run_id}' AND y_true >= 3 AND y_pred <= 1
         GROUP BY split
     """)
-    return df
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", help="run_id; verilmezse en iyi valid QWK'li kosu")
+    ap.add_argument("--run", help="run_id; defaults to the best validation QWK")
     args = ap.parse_args()
 
     board = leaderboard()
@@ -110,7 +109,7 @@ def main():
         return
 
     run_id = args.run or board.iloc[0]["run_id"]
-    print(f"\n{'=' * 60}\nDETAY: run_id={run_id}\n{'=' * 60}")
+    print(f"\n{'=' * 60}\nDETAIL: run_id={run_id}\n{'=' * 60}")
 
     for split in ("valid", "test"):
         m = confusion(run_id, split)
@@ -118,13 +117,13 @@ def main():
             continue
         print(f"\n--- {split.upper()} confusion matrix ---")
         print(m.to_string())
-        print(f"\n--- {split.upper()} sinif bazli ---")
+        print(f"\n--- {split.upper()} per class ---")
         print(per_class(run_id, split).to_string(index=False))
 
-    missed = severe_missed(run_id)
-    print("\n--- KACIRILAN CIDDI VAKA (gercek >=3, tahmin <=1) ---")
+    missed = missed_severe(run_id)
+    print("\n--- MISSED SEVERE CASES (true >= 3, predicted <= 1) ---")
     print(missed.to_string(index=False) if not missed.empty
-          else "  yok - hicbir ciddi vaka saglam olarak siniflandirilmadi")
+          else "  none - no severe case was classified as healthy")
 
 
 if __name__ == "__main__":

@@ -1,17 +1,19 @@
-"""Veri kalite raporu ve problemli goruntu listesi.
+"""Data quality report and problem-image list.
 
-scan_images.py'nin urettigi tablodan turer; goruntuler yeniden okunmaz.
-Kontrol ettikleri:
+Derives from the table produced by scan_images.py; source images are not read
+again except to verify duplicate candidates. Checks:
 
-  - okunamayan / bozuk goruntuler
-  - CSV'de olup klasorde olmayan, klasorde olup CSV'de olmayan kayitlar
-  - asiri karanlik ve asiri parlak goruntuler
-  - duplicate goruntuler (algisal hash ile)
-  - split'ler arasi duplicate - skoru sisirebilecegi icin ayrica isaretlenir
+  - unreadable / corrupt images
+  - labels without an image, images without a label
+  - unusably dark or bright images, plus distribution outliers
+  - duplicate images (perceptual hash, then pixel-level verification)
+  - cross-split duplicates, which would inflate the reported score
 
-Cikti: reports/data_quality.md + reports/problem_images.csv
+Output: reports/data_quality.md
+        reports/problem_images.csv
+        reports/leaked_train_ids.csv   (training images to exclude)
 
-Kullanim:
+Usage:
     python scripts/quality_report.py
 """
 import argparse
@@ -38,7 +40,8 @@ def section(title):
 
 
 def _thumb(id_code, split, cache={}):
-    """Islenmis 512px JPEG'den 128px gri kucultme - ham PNG'leri okumaktan hizli."""
+    """128px grayscale thumbnail from the processed JPEG - far cheaper than
+    re-reading the raw PNG."""
     key = (id_code, split)
     if key in cache:
         return cache[key]
@@ -52,11 +55,11 @@ def _thumb(id_code, split, cache={}):
 
 
 def _same_image(a, b, min_corr=0.995, max_mae=3.0):
-    """Iki kucultmenin gercekten ayni goruntu olup olmadigi.
+    """Whether two thumbnails are genuinely the same image.
 
-    Esikler bilincli olarak siki: dogrulama sirasinda olculen gercek ciftler
-    korelasyon 1.0000 / MAE 0.00 veriyor, farkli retinalar ise 0.97-0.985
-    araliginda kaliyordu. Aradaki bosluga esik koyduk.
+    The thresholds are deliberately strict. When this was measured, true pairs
+    scored correlation 1.0000 / MAE 0.00 while different retinas sat at
+    0.97-0.985; the cutoff falls in the gap between them.
     """
     if a is None or b is None:
         return False
@@ -65,16 +68,14 @@ def _same_image(a, b, min_corr=0.995, max_mae=3.0):
 
 
 def _verify_duplicates(candidates):
-    """dHash adaylarini piksel duzeyinde dogrular, gercek gruplari doner."""
+    """Verify dHash candidates at pixel level and return the real groups."""
     groups = []
     for _, g in candidates.groupby("dhash"):
         members = list(zip(g.id_code, g.split))
-        # grup icinde gercekten esit olan alt kumeleri bul
         remaining = list(members)
         while len(remaining) > 1:
             head, rest = remaining[0], remaining[1:]
-            matched = [head]
-            leftover = []
+            matched, leftover = [head], []
             for other in rest:
                 if _same_image(_thumb(*head), _thumb(*other)):
                     matched.append(other)
@@ -89,166 +90,153 @@ def _verify_duplicates(candidates):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dark", type=float, default=HARD_DARK,
-                    help="bu degerin altindaki goruntu kullanilamaz sayilir")
+                    help="below this an image counts as unusable")
     ap.add_argument("--bright", type=float, default=HARD_BRIGHT,
-                    help="bu degerin ustundeki goruntu kullanilamaz sayilir")
+                    help="above this an image counts as unusable")
     ap.add_argument("--mad-k", type=float, default=3.5,
-                    help="parlaklik ucdegeri icin MAD katsayisi")
+                    help="MAD multiplier for brightness outliers")
     args = ap.parse_args()
 
     if not STATS.exists():
-        raise SystemExit(f"{STATS} yok - once scripts/scan_images.py calistirin")
+        raise SystemExit(f"{STATS} not found - run scripts/scan_images.py first")
 
     stats = pd.read_csv(STATS)
     labels = pd.read_csv(LABELS)
     REPORTS.mkdir(exist_ok=True)
 
-    md = ["# Veri Kalite Raporu\n",
-          f"\nKaynak: {len(stats)} taranan goruntu, {len(labels)} etiket satiri.\n"]
+    md = ["# Data Quality Report\n",
+          f"\nSource: {len(stats)} scanned images, {len(labels)} label rows.\n"]
     problems = []
 
-    # ---------------------------------------------------------- okunabilirlik
+    # ------------------------------------------------------------ readability
     unreadable = stats[~stats.readable]
-    md.append(section("Bozuk / acilmayan goruntuler"))
-    md.append(f"- Taranan: **{len(stats)}**\n")
-    md.append(f"- Okunamayan: **{len(unreadable)}**\n")
+    md.append(section("Corrupt / unreadable images"))
+    md.append(f"- Scanned: **{len(stats)}**\n")
+    md.append(f"- Unreadable: **{len(unreadable)}**\n")
     for _, r in unreadable.iterrows():
         problems.append({"id_code": r.id_code, "split": r.split,
-                         "sorun": "okunamadi", "deger": r.get("error")})
+                         "issue": "unreadable", "value": r.get("error")})
 
     ok = stats[stats.readable].copy()
 
-    # ------------------------------------------------- etiket <-> dosya eslesme
-    md.append(section("Etiket ve dosya eslesmesi"))
+    # ------------------------------------------------------ label <-> file
+    md.append(section("Label and file correspondence"))
     lab_ids, img_ids = set(labels.id_code), set(ok.id_code)
     only_lab, only_img = lab_ids - img_ids, img_ids - lab_ids
-    md.append(f"- Etikette olup goruntusu olmayan: **{len(only_lab)}**\n")
-    md.append(f"- Goruntusu olup etiketi olmayan: **{len(only_img)}**\n")
+    md.append(f"- Labelled but no image: **{len(only_lab)}**\n")
+    md.append(f"- Image but no label: **{len(only_img)}**\n")
     for i in sorted(only_lab):
-        problems.append({"id_code": i, "split": "", "sorun": "goruntu yok", "deger": ""})
+        problems.append({"id_code": i, "split": "", "issue": "no image", "value": ""})
     for i in sorted(only_img):
-        problems.append({"id_code": i, "split": "", "sorun": "etiket yok", "deger": ""})
+        problems.append({"id_code": i, "split": "", "issue": "no label", "value": ""})
 
-    # islenmis klasorle de karsilastir
     if PROCESSED.exists():
         proc = {p.stem for split in ("train", "valid", "test")
                 for p in (PROCESSED / split).glob("*.jpg")}
-        md.append(f"- Islenmis klasorde eksik: **{len(lab_ids - proc)}**\n")
+        md.append(f"- Missing from the processed set: **{len(lab_ids - proc)}**\n")
 
-    # ------------------------------------------------------- parlaklik uclari
-    # Iki ayri soru, iki ayri olcut:
-    #   1) Goruntu kullanilabilir mi?  -> sabit esikler (neredeyse siyah/beyaz)
-    #   2) Dagilimdan sapiyor mu?      -> MAD tabanli ucdeger tespiti
-    # Sabit esik tek basina yaniltici: fundus fotograflari dogasi geregi koyu,
-    # bu veri setinde parlaklik 130'u hic gecmiyor. Genel amacli bir "asiri
-    # parlak" esigi burada hicbir zaman tetiklenmez ve "0 sorun" raporu bir sey
-    # olcmedigi icin 0 cikar.
+    # ------------------------------------------------------------- brightness
+    # Two separate questions, two separate measures:
+    #   1) Is the image usable at all?   -> fixed thresholds (near black/white)
+    #   2) Does it deviate from the rest? -> MAD-based outlier detection
+    # A fixed threshold alone is misleading here: fundus photographs are
+    # inherently dark and brightness never exceeds 130 in this dataset, so a
+    # general-purpose "too bright" cutoff can never fire and its zero means
+    # nothing.
     dark = ok[ok.brightness < args.dark]
     bright = ok[ok.brightness > args.bright]
-    outlier_mask = brightness_outliers(ok.brightness.values, k=args.mad_k)
-    outliers = ok[outlier_mask]
+    outliers = ok[brightness_outliers(ok.brightness.values, k=args.mad_k)]
 
-    md.append(section("Parlaklik kontrolu"))
-    md.append("Iki ayri olcut kullaniliyor: kullanilabilirlik icin sabit esikler, "
-              "olagandisilik icin dagilim tabanli ucdeger tespiti.\n\n")
-    md.append(f"| olcut | esik | isaretlenen |\n|---|---|---|\n")
-    md.append(f"| Kullanilamayacak kadar karanlik | `< {args.dark}` | {len(dark)} |\n")
-    md.append(f"| Kullanilamayacak kadar parlak | `> {args.bright}` | {len(bright)} |\n")
-    md.append(f"| Dagilim ucdegeri | MAD, k={args.mad_k} | {len(outliers)} |\n")
-    md.append(f"\n- Parlaklik araligi: {ok.brightness.min():.1f} - "
-              f"{ok.brightness.max():.1f} (medyan {ok.brightness.median():.1f})\n")
-    md.append(f"- Kontrast (std) araligi: {ok.contrast_std.min():.1f} - "
-              f"{ok.contrast_std.max():.1f} (medyan {ok.contrast_std.median():.1f})\n")
+    md.append(section("Brightness checks"))
+    md.append("Two measures are used: fixed thresholds for usability, and a "
+              "distribution-based test for unusualness.\n\n")
+    md.append("| measure | threshold | flagged |\n|---|---|---|\n")
+    md.append(f"| Unusably dark | `< {args.dark}` | {len(dark)} |\n")
+    md.append(f"| Unusably bright | `> {args.bright}` | {len(bright)} |\n")
+    md.append(f"| Distribution outlier | MAD, k={args.mad_k} | {len(outliers)} |\n")
+    md.append(f"\n- Brightness range: {ok.brightness.min():.1f} - "
+              f"{ok.brightness.max():.1f} (median {ok.brightness.median():.1f})\n")
+    md.append(f"- Contrast (std) range: {ok.contrast_std.min():.1f} - "
+              f"{ok.contrast_std.max():.1f} (median {ok.contrast_std.median():.1f})\n")
 
     if len(outliers) == 0:
-        md.append("\nMAD ucdegeri bulunmadi. Bu anlamli bir sifir: olcut verinin "
-                  "kendi olcegine gore calisiyor, dolayisiyla parlaklik dagiliminda "
-                  "gercekten sapan bir goruntu yok demektir.\n")
+        md.append("\nNo MAD outliers. This is an informative zero: the measure "
+                  "adapts to the data's own scale, so it means nothing in the "
+                  "brightness distribution genuinely deviates.\n")
     else:
-        md.append("\n| id_code | split | parlaklik |\n|---|---|---|\n")
+        md.append("\n| id_code | split | brightness |\n|---|---|---|\n")
         for _, r in outliers.iterrows():
             md.append(f"| {r.id_code} | {r.split} | {r.brightness:.1f} |\n")
 
-    for _, r in dark.iterrows():
-        problems.append({"id_code": r.id_code, "split": r.split,
-                         "sorun": "asiri karanlik", "deger": r.brightness})
-    for _, r in bright.iterrows():
-        problems.append({"id_code": r.id_code, "split": r.split,
-                         "sorun": "asiri parlak", "deger": r.brightness})
-    for _, r in outliers.iterrows():
-        problems.append({"id_code": r.id_code, "split": r.split,
-                         "sorun": "parlaklik ucdegeri", "deger": r.brightness})
+    for frame, issue in ((dark, "too dark"), (bright, "too bright"),
+                         (outliers, "brightness outlier")):
+        for _, r in frame.iterrows():
+            problems.append({"id_code": r.id_code, "split": r.split,
+                             "issue": issue, "value": r.brightness})
 
-    # düşük kontrast - CLAHE'nin en cok fayda saglayacagi goruntuler
-    low_c = ok[ok.contrast_std < ok.contrast_std.quantile(0.02)]
-    md.append(f"- En dusuk %2 kontrast ({len(low_c)} goruntu): "
-              f"std < {ok.contrast_std.quantile(0.02):.1f} - CLAHE'nin en cok "
-              f"fayda saglayacagi grup\n")
-
-    # ------------------------------------------------------------- duplicate
-    md.append(section("Duplicate goruntuler"))
+    # -------------------------------------------------------------- duplicates
+    md.append(section("Duplicate images"))
     candidates = ok.groupby("dhash").filter(lambda g: len(g) > 1)
     n_cand = candidates.dhash.nunique() if len(candidates) else 0
 
-    md.append("Iki asamali tespit: dHash ucuz bir aday ureteci, ardindan her aday "
-              "cifti piksel duzeyinde dogrulaniyor.\n\n")
-    md.append(f"- dHash adayi grup: **{n_cand}**\n")
+    md.append("Two-stage detection: dHash is a cheap candidate generator, then "
+              "every candidate pair is verified at pixel level.\n\n")
+    md.append(f"- dHash candidate groups: **{n_cand}**\n")
 
-    # dHash tek basina yeterli degil: fundus goruntulerinin hepsi siyah zeminde
-    # parlak bir daire oldugu icin farkli retinalar ayni hash'i uretebiliyor.
-    # Adaylari 128px gri kucultmeler uzerinden korelasyon + ortalama mutlak fark
-    # ile dogruluyoruz.
+    # dHash alone is not enough: every fundus image is a bright disc on black,
+    # so different retinas can produce the same hash. Candidates are verified
+    # with correlation and mean absolute error over 128px thumbnails.
     confirmed, cross = [], 0
     if n_cand:
-        verified_groups = _verify_duplicates(candidates)
-        for members in verified_groups:
+        for members in _verify_duplicates(candidates):
             splits = sorted({m[1] for m in members})
             if len(splits) > 1:
                 cross += 1
             confirmed.append((members, splits))
             for id_code, split in members:
                 problems.append({"id_code": id_code, "split": split,
-                                 "sorun": "duplicate", "deger": "+".join(
-                                     m[0] for m in members)})
+                                 "issue": "duplicate",
+                                 "value": "+".join(m[0] for m in members)})
 
-        md.append(f"- Piksel duzeyinde dogrulanan grup: **{len(confirmed)}**\n")
-        md.append(f"- Yanlis pozitif elenen: **{n_cand - len(confirmed)}**\n")
-        md.append(f"- Etkilenen goruntu: **{sum(len(m) for m, _ in confirmed)}**\n")
-        md.append(f"- Split'ler arasi: **{cross}**\n")
+        md.append(f"- Verified at pixel level: **{len(confirmed)}**\n")
+        md.append(f"- False positives removed: **{n_cand - len(confirmed)}**\n")
+        md.append(f"- Images affected: **{sum(len(m) for m, _ in confirmed)}**\n")
+        md.append(f"- Spanning more than one split: **{cross}**\n")
 
         if confirmed:
-            md.append("\n| goruntuler | split'ler |\n|---|---|\n")
+            md.append("\n| images | splits |\n|---|---|\n")
             for members, splits in confirmed:
                 md.append(f"| {', '.join(m[0] for m in members)} | "
                           f"{', '.join(splits)} |\n")
         if cross:
-            md.append("\n> Split'ler arasi duplicate skoru sisirir: ayni goruntu hem "
-                      "egitimde hem testte gorunuyorsa test sonucu iyimser cikar. "
-                      "Bunlarin egitimden cikarilmasi gerekir.\n")
+            md.append("\n> Cross-split duplicates inflate the reported score: if "
+                      "the same image appears in both training and test, the test "
+                      "result is optimistic. These should be dropped from training.\n")
     else:
-        md.append("\nAday bulunmadi.\n")
+        md.append("\nNo candidates found.\n")
     n_groups = len(confirmed)
 
-    # ------------------------------------------------------------------ ozet
-    md.insert(2, section("Ozet"))
+    # -------------------------------------------------------------- summary
+    md.insert(2, section("Summary"))
     md.insert(3,
-              f"| kontrol | sonuc |\n|---|---|\n"
-              f"| Okunamayan goruntu | {len(unreadable)} |\n"
-              f"| Etiketi olmayan goruntu | {len(only_img)} |\n"
-              f"| Goruntusu olmayan etiket | {len(only_lab)} |\n"
-              f"| Kullanilamayacak kadar karanlik | {len(dark)} |\n"
-              f"| Kullanilamayacak kadar parlak | {len(bright)} |\n"
-              f"| Parlaklik ucdegeri (MAD k={args.mad_k}) | {len(outliers)} |\n"
-              f"| Duplicate grup (dogrulanmis) | {n_groups} |\n"
-              f"| Split'ler arasi duplicate | {cross} |\n")
+              f"| check | result |\n|---|---|\n"
+              f"| Unreadable images | {len(unreadable)} |\n"
+              f"| Images without a label | {len(only_img)} |\n"
+              f"| Labels without an image | {len(only_lab)} |\n"
+              f"| Unusably dark | {len(dark)} |\n"
+              f"| Unusably bright | {len(bright)} |\n"
+              f"| Brightness outliers (MAD k={args.mad_k}) | {len(outliers)} |\n"
+              f"| Duplicate groups (verified) | {n_groups} |\n"
+              f"| Cross-split duplicates | {cross} |\n")
 
     (REPORTS / "data_quality.md").write_text("".join(md), encoding="utf-8")
 
-    prob_df = pd.DataFrame(problems, columns=["id_code", "split", "sorun", "deger"])
+    prob_df = pd.DataFrame(problems, columns=["id_code", "split", "issue", "value"])
     prob_df.to_csv(REPORTS / "problem_images.csv", index=False)
 
-    # Egitimden cikarilmasi gereken id'ler: valid veya test'te birebir kopyasi
-    # olanlar. Egitim tarafini duserek degerlendirme kumeleri bozulmadan kalir.
+    # Training images to exclude: those with an exact copy in valid or test.
+    # Dropping the training side keeps the evaluation sets intact, so runs stay
+    # comparable with each other.
     leaked = sorted({id_code for members, splits in confirmed
                      if len(splits) > 1
                      for id_code, split in members if split == "train"})
@@ -257,8 +245,8 @@ def main():
 
     print("".join(md))
     print(f"\n-> {REPORTS / 'data_quality.md'}")
-    print(f"-> {REPORTS / 'problem_images.csv'}  ({len(prob_df)} satir)")
-    print(f"-> {REPORTS / 'leaked_train_ids.csv'}  ({len(leaked)} egitim goruntusu)")
+    print(f"-> {REPORTS / 'problem_images.csv'}  ({len(prob_df)} rows)")
+    print(f"-> {REPORTS / 'leaked_train_ids.csv'}  ({len(leaked)} training images)")
 
 
 if __name__ == "__main__":

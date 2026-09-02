@@ -1,58 +1,55 @@
-# Goruntu Ozellikleri Ozeti
+# Image Properties Summary
 
-Ham APTOS-2019 fundus goruntuleri, n=3662.
+Raw APTOS-2019 fundus photographs, n=3662.
 
-## Okunabilirlik ve renk modu
+## Readability and colour mode
 
-| kontrol | sonuc |
+| check | result |
 |---|---|
-| Okunabilir | 3662 / 3662 |
-| Renk modu | RGB: 3662 |
-| Kanal sayisi | 3: 3662 |
+| Readable | 3662 / 3662 |
+| Colour mode | RGB: 3662 |
+| Channels | 3: 3662 |
 
-Renk modu dosya bicimine degil icerige gore belirlendi: uc kanali
-birebir esit olan bir goruntu RGB kaydedilmis olsa da gri tonlamadir.
+Colour mode is judged by content rather than file format: an image whose three channels are identical is grayscale even if it was stored as RGB.
 
-## Cozunurluk
+## Resolution
 
-| olcu | en kucuk | medyan | en buyuk |
+| measure | min | median | max |
 |---|---|---|---|
-| Genislik | 474 | 2144 | 4288 |
-| Yukseklik | 358 | 1536 | 2848 |
-| Megapiksel | 0.17 | 3.15 | 12.21 |
-| En-boy orani | 1.000 | 1.333 | 1.506 |
+| Width | 474 | 2144 | 4288 |
+| Height | 358 | 1536 | 2848 |
+| Megapixels | 0.17 | 3.15 | 12.21 |
+| Aspect ratio | 1.000 | 1.333 | 1.506 |
 
-Toplam **17 farkli cozunurluk** var. En sik gorulenler:
+There are **17 distinct resolutions**. The most common:
 
-| cozunurluk | adet | oran |
+| resolution | count | share |
 |---|---|---|
-| 1050x1050 | 974 | %26.6 |
-| 2416x1736 | 638 | %17.4 |
-| 2588x1958 | 533 | %14.6 |
-| 3216x2136 | 410 | %11.2 |
-| 2048x1536 | 351 | %9.6 |
-| 819x614 | 287 | %7.8 |
-| 3388x2588 | 141 | %3.9 |
-| 1504x1000 | 92 | %2.5 |
+| 1050x1050 | 974 | 26.6% |
+| 2416x1736 | 638 | 17.4% |
+| 2588x1958 | 533 | 14.6% |
+| 3216x2136 | 410 | 11.2% |
+| 2048x1536 | 351 | 9.6% |
+| 819x614 | 287 | 7.8% |
+| 3388x2588 | 141 | 3.9% |
+| 1504x1000 | 92 | 2.5% |
 
-974 goruntu (%26.6) zaten kare; geri kalani resize oncesi kareye tamamlanir. Cozunurlugun bu kadar degisken olmasi sabit boyuta getirmeyi zorunlu kiliyor.
+974 images (26.6%) are already square; the rest are brought to a square before resizing. This much variation in resolution makes a fixed input size mandatory.
 
-## Piksel istatistikleri
+## Pixel statistics
 
-| olcu | en dusuk | ortalama | en yuksek |
+| measure | min | mean | max |
 |---|---|---|---|
-| Parlaklik | 15.0 | 66.8 | 129.6 |
-| Kontrast (std) | 9.6 | 38.8 | 75.8 |
-| Siyah piksel orani | 0.000 | 0.232 | 0.528 |
+| Brightness | 15.0 | 66.8 | 129.6 |
+| Contrast (std) | 9.6 | 38.8 | 75.8 |
+| Black pixel ratio | 0.000 | 0.232 | 0.528 |
 
-Parlaklik hicbir goruntude 130'un uzerine cikmiyor; fundus fotograflari
-dogasi geregi koyu. Sabit bir "asiri parlak" esigi (orn. 240) bu veri
-setinde hicbir seyi elemez, yuzdelik tabanli esik daha anlamli.
+Brightness never exceeds 130 in this dataset; fundus photographs are inherently dark. A fixed "too bright" cutoff such as 240 would never fire here, which is why the quality report also uses a distribution-based outlier test.
 
-## Auto-crop kazanci
+## Auto-crop saving
 
-Retina disindaki siyah cerceve kirpildiginda alanin ortalama **%10.4**'i atiliyor (en az %0.0, en cok %39.9).
+Removing the black frame outside the retina discards **10.4%** of the area on average (min 0.0%, max 39.9%).
 
 ---
 
-Grafikler: `reports/figures/06_image_properties.png`. Goruntu basina ayrintili veri: BigQuery `aptos_image_stats`.
+Charts: `reports/figures/06_image_properties.png`. Per-image detail: BigQuery `aptos_image_stats`.

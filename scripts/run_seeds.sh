@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Coklu seed karsilastirmasi: her varyanti ayni seed'lerle calistirir.
+# Repeat a single-split comparison across several seeds.
 #
-# Tek kosunun oynakligini olcmek icin. Seed 42 zaten calistirildi
-# (run_id e41cb5fe = baseline, 26404d07 = clahe), burada 43 ve 44 eklenir.
+# Measures how much of an apparent difference between two variants is real and
+# how much is run-to-run noise. Seed 42 established the first result; this adds
+# more seeds so the sign of the difference can be checked for consistency.
 #
-# Kullanim: bash scripts/run_seeds.sh 43 44
+# Usage: bash scripts/run_seeds.sh 43 44
 set -u
 
 SEEDS=("$@")
@@ -23,7 +24,7 @@ for seed in "${SEEDS[@]}"; do
 
     echo ""
     echo "=================================================="
-    echo "BASLIYOR  variant=$variant  seed=$seed"
+    echo "START  variant=$variant  seed=$seed"
     echo "=================================================="
 
     python -u scripts/train.py \
@@ -32,9 +33,9 @@ for seed in "${SEEDS[@]}"; do
       --seed "$seed" --data-dir "$data_dir" --variant "$variant" \
       --author senanur
 
-    echo "BITTI  variant=$variant  seed=$seed  (cikis $?)"
+    echo "DONE  variant=$variant  seed=$seed  (exit $?)"
   done
 done
 
 echo ""
-echo "TUM KOSULAR TAMAMLANDI"
+echo "ALL SEED RUNS COMPLETE"

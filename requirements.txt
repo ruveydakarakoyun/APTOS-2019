@@ -1,4 +1,4 @@
-# Not: torch/torchvision'i GPU icin SADECE CUDA indeksinden kurun:
+# Note: for GPU support install torch/torchvision from the CUDA index ONLY:
 #   pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu128
 torch>=2.0.0
 torchvision>=0.15.0

@@ -1,22 +1,27 @@
-"""APTOS goruntulerini egitime hazir hale getirir.
+"""Prepare APTOS images for training.
 
-Ham PNG'ler ortalama 2 MB ve cogu retina disi siyah bosluk. Her epoch'ta bunlari
-tekrar decode etmek egitimi I/O'ya baglar. Bu script bir kez calisir ve
-scripts/preprocessing.py'deki ortak boru hattini her goruntuye uygular:
+Raw PNGs average 2 MB and are mostly black space outside the retina. Decoding
+them every epoch would make training I/O-bound. This script runs once and
+applies the shared pipeline from scripts/preprocessing.py to every image:
 
-    Oku -> Kalite Kontrolu -> Auto-Crop -> CLAHE -> Kare -> Resize
+    Read -> Quality check -> Auto-crop -> CLAHE -> Square -> Resize
 
-Normalizasyon burada YAPILMAZ; egitimde torchvision donusumleri icinde yapilir
-(train.py). Iki yerde birden normalize etmemek icin bilincli bir ayrim.
+Normalisation is deliberately NOT done here; it happens in the torchvision
+transforms at training time (train.py). Keeping it in one place avoids
+normalising twice.
 
-Girdi : data/images/{train_images/train_images, val_images/val_images,
+Input : data/images/{train_images/train_images, val_images/val_images,
                     test_images/test_images}/*.png
-Cikti : data/processed/<split>/<id_code>.jpg          (--no-clahe ile)
-        data/processed_clahe/<split>/<id_code>.jpg    (varsayilan)
+Output: data/processed_clahe/<split>/<id_code>.jpg   (default)
+        data/processed/<split>/<id_code>.jpg         (with --no-clahe)
 
-Kullanim:
-    python scripts/preprocess_images.py --size 512               # CLAHE'li
-    python scripts/preprocess_images.py --size 512 --no-clahe    # kontrol grubu
+Each output directory also gets a _manifest.json recording the settings it was
+produced with; train.py reads and prints it, so every run records which
+preprocessing it used.
+
+Usage:
+    python scripts/preprocess_images.py --size 512               # with CLAHE
+    python scripts/preprocess_images.py --size 512 --no-clahe    # control set
 """
 import argparse
 import json
@@ -31,7 +36,8 @@ from preprocessing import preprocess  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# Kaggle arsivinin klasor adlari tutarsiz: valid split'i "val_images" altinda.
+# The Kaggle archive is inconsistent: the validation split lives under
+# "val_images", not "valid_images".
 SOURCE_DIRS = {
     "train": ROOT / "data" / "images" / "train_images" / "train_images",
     "valid": ROOT / "data" / "images" / "val_images" / "val_images",
@@ -45,7 +51,7 @@ def process_one(args):
                            normalize=False, clip_limit=clip,
                            quality_check=True, square_mode=square_mode)
     if img is None:
-        return src.stem, info.get("error", "bilinmeyen hata")
+        return src.stem, info.get("error", "unknown error")
 
     cv2.imwrite(str(dst), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
     return src.stem, None
@@ -57,12 +63,12 @@ def main():
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--clip-limit", type=float, default=2.0)
     ap.add_argument("--square-mode", choices=["squash", "pad"], default="squash",
-                    help="kareye getirme yontemi; squash siyah alani %28.5'ten "
-                         "%13.4'e indirir ve doku kaybettirmez")
+                    help="how to reach a square; squash cuts black area from "
+                         "28.5%% to 13.4%% without losing tissue")
     ap.add_argument("--no-clahe", action="store_true",
-                    help="CLAHE'siz uret - karsilastirmanin kontrol grubu")
+                    help="produce without CLAHE - the control set for comparison")
     ap.add_argument("--out", default=None,
-                    help="cikti klasoru; verilmezse CLAHE durumuna gore secilir")
+                    help="output directory; defaults by CLAHE setting")
     args = ap.parse_args()
 
     use_clahe = not args.no_clahe
@@ -72,17 +78,17 @@ def main():
     jobs = []
     for split, src_dir in SOURCE_DIRS.items():
         if not src_dir.exists():
-            raise SystemExit(f"{src_dir} yok - once Kaggle indirmesini tamamlayin")
+            raise SystemExit(f"{src_dir} not found - download the Kaggle data first")
         out_dir = out_root / split
         out_dir.mkdir(parents=True, exist_ok=True)
         for png in sorted(src_dir.glob("*.png")):
             jobs.append((png, out_dir / f"{png.stem}.jpg", args.size,
                          use_clahe, args.clip_limit, args.square_mode))
 
-    print(f"{len(jobs)} goruntu, {args.size}x{args.size}, "
-          f"CLAHE {'acik (clip=' + str(args.clip_limit) + ')' if use_clahe else 'KAPALI'}, "
-          f"kare={args.square_mode}, {args.workers} surec")
-    print(f"cikti: {out_root}")
+    print(f"{len(jobs)} images, {args.size}x{args.size}, "
+          f"CLAHE {'on (clip=' + str(args.clip_limit) + ')' if use_clahe else 'OFF'}, "
+          f"square={args.square_mode}, {args.workers} workers")
+    print(f"output: {out_root}")
 
     failures, done = [], 0
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
@@ -94,9 +100,8 @@ def main():
             if done % 500 == 0:
                 print(f"  {done}/{len(jobs)}")
 
-    # Kunye: bu klasorun hangi ayarlarla uretildigi. train.py ve train_cv.py
-    # bunu okuyup basar, boylece bir kosunun hangi on islemeyle yapildigi
-    # kayitli kalir.
+    # Provenance record: which settings produced this directory. train.py and
+    # train_cv.py read and print it, so a run always states its preprocessing.
     (out_root / "_manifest.json").write_text(json.dumps({
         "size": args.size,
         "clahe": use_clahe,
@@ -105,12 +110,12 @@ def main():
         "n_images": done - len(failures),
     }, indent=2), encoding="utf-8")
 
-    print(f"\nbitti: {done - len(failures)} basarili, {len(failures)} atlandi")
-    print(f"kunye: {out_root / '_manifest.json'}")
+    print(f"\ndone: {done - len(failures)} written, {len(failures)} skipped")
+    print(f"manifest: {out_root / '_manifest.json'}")
     for stem, err in failures[:20]:
         print(f"  {stem}: {err}")
     if len(failures) > 20:
-        print(f"  ... ve {len(failures) - 20} tane daha")
+        print(f"  ... and {len(failures) - 20} more")
 
 
 if __name__ == "__main__":
