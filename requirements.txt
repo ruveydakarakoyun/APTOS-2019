@@ -1,0 +1,9 @@
+torch
+torchvision
+timm
+albumentations
+scikit-learn
+pandas
+numpy
+tqdm
+google-cloud-storage

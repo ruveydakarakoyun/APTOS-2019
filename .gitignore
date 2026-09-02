@@ -1,0 +1,17 @@
+# Python / PyTorch temporary files
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Virtual environments & Local data
+venv/
+env/
+data/
+*.png
+*.jpg
+*.csv
