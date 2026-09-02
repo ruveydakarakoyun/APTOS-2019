@@ -1,4 +1,4 @@
-id_code,split,sorun,deger
+id_code,split,issue,value
 b019a49787c1,train,duplicate,b019a49787c1+e1fb532f55df
 e1fb532f55df,train,duplicate,b019a49787c1+e1fb532f55df
 6253f23229b1,train,duplicate,6253f23229b1+76cfe8967f7d

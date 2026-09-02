@@ -1,198 +1,250 @@
-# APTOS-2019 Diyabetik Retinopati Siniflandirmasi
+# APTOS-2019 Diabetic Retinopathy Grading
 
-Data science bitirme projesi. 3662 fundus goruntusunden ICDRSS olceginde
-diyabetik retinopati siddeti (0-4) tahmini.
+Final-year data science project. Predicting diabetic retinopathy severity
+(ICDRSS grades 0-4) from 3662 retinal fundus photographs.
 
-Kaynak: Kaggle [`mariaherrerot/aptos2019`](https://www.kaggle.com/datasets/mariaherrerot/aptos2019)
-— APTOS 2019 Blindness Detection verisinin train/valid/test olarak bolunmus hali.
+Data: Kaggle [`mariaherrerot/aptos2019`](https://www.kaggle.com/datasets/mariaherrerot/aptos2019)
+— the APTOS 2019 Blindness Detection set, pre-split into train/valid/test.
 
-## Mimari
+## Architecture
 
-| Katman | Yer |
+| Layer | Location |
 |---|---|
-| Etiketler ve sonuclar | BigQuery `datascientis.APTOS_2019` |
-| Goruntuler (paylasilan) | GCS `gs://aptos2019-retina-images` |
-| Goruntuler (egitim) | `data/processed*/` — 512px JPEG, yerel |
+| Labels and results | BigQuery `datascientis.APTOS_2019` |
+| Images (shared) | GCS `gs://aptos2019-retina-images` |
+| Images (training) | `data/processed*/` — 512px JPEG, local |
 
-Colab ve yerel GPU ayni BigQuery ve GCS'i kullanir. Her egitim kosusu `run_id`,
-`author` ve `variant` ile yazildigi icin kosular birbirini ezmez.
+Colab and a local GPU read the same BigQuery tables and the same bucket. Every
+run is written with `run_id`, `author`, `variant`, `seed` and `fold`, so runs
+never overwrite each other.
 
-## Kurulum
+## Setup
 
 ```bash
 pip install -r requirements.txt
 ```
 
-GPU icin PyTorch'u **sadece** CUDA indeksinden kurun — `--extra-index-url`
-eklerseniz pip PyPI'daki CPU derlemesini secer:
+For GPU support install PyTorch from the CUDA index **only** — adding
+`--extra-index-url` makes pip prefer the CPU build on PyPI:
 
 ```bash
 pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu128
 ```
 
-Kimlik dogrulama:
+Authentication:
 
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS=/yol/servis-hesabi.json
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 ```
 
-## Boru hatti
+## Pipeline
 
 ```bash
-# 1. Ham veri
+# 1. Raw data
 kaggle datasets download mariaherrerot/aptos2019 -p data/images --unzip
 
-# 2. Etiketler -> BigQuery
+# 2. Labels -> BigQuery
 python scripts/prepare_bq_csv.py
 python scripts/load_to_bigquery.py --project datascientis --dataset APTOS_2019 \
        --location EU --prefix aptos_
 
-# 3. Goruntu ozelliklerini tara -> BigQuery
+# 3. Scan image properties -> BigQuery
 python scripts/scan_images.py
 
-# 4. Raporlar: goruntu ozellikleri, veri kalitesi, duplicate analizi
+# 4. Reports: image properties, data quality, shortcut analysis
 python scripts/image_report.py
 python scripts/quality_report.py
-
-# 5. Goruntuleri hazirla
-python scripts/preprocess_images.py --size 512              # CLAHE'li
-python scripts/preprocess_images.py --size 512 --no-clahe   # kontrol grubu
-
-# 6. Gorseller ve kisayol analizi
-python scripts/make_figures.py
 python scripts/confound_analysis.py
 
-# 7. Egit
-python scripts/train.py --mode reg --epochs 30 --patience 5 \
-       --data-dir data/processed_clahe --variant clahe
+# 5. Prepare images for training
+python scripts/preprocess_images.py --size 512              # with CLAHE
+python scripts/preprocess_images.py --size 512 --no-clahe   # control set
 
-# 8. Kosulari karsilastir
+# 6. Figures
+python scripts/make_figures.py
+
+# 7. Train - single split
+python scripts/train.py --mode reg --epochs 30 --patience 5 \
+       --data-dir data/processed_clahe --variant clahe --exclude-leaked
+
+# 7b. Train - 5-fold cross-validation (preferred)
+python scripts/train_cv.py --folds 5 --exclude-leaked --variant baseline
+
+# 8. Compare runs
 python scripts/analyze_runs.py
 ```
 
-## On isleme
+## Preprocessing
 
-Ortak fonksiyonlar `scripts/preprocessing.py` icinde; diger scriptler bunu
-import eder, kopyalamaz.
+Shared functions live in `scripts/preprocessing.py`; every other script and the
+Colab notebook imports from it rather than keeping a copy.
 
 ```
-Oku -> Kalite Kontrolu -> Auto-Crop -> CLAHE -> Kare -> Resize -> Normalization
+Read -> Quality check -> Auto-crop -> CLAHE -> Square -> Resize -> Normalise
 ```
 
-![Boru hatti](reports/figures/05_pipeline_stages.png)
+![Pipeline](reports/figures/05_pipeline_stages.png)
 
-| fonksiyon | ne yapar |
+| function | what it does |
 |---|---|
-| `auto_crop()` | Retina disindaki siyah cerceveyi keser (ortalama %10.4 alan kazanci) |
-| `apply_clahe()` | LAB uzayinda yalnizca L kanalina CLAHE — renk dengesini bozmadan damarlari belirginlestirir |
-| `image_quality()` | Parlaklik/kontrast olculeri, asiri karanlik ve asiri parlak tespiti |
-| `dhash()` | Algisal hash — duplicate tespitinde aday ureteci |
-| `preprocess()` | Alti asamayi sirayla uygulayan tam boru hatti |
+| `auto_crop()` | Removes the black frame outside the retina (10.4% of the area on average) |
+| `apply_clahe()` | CLAHE on the LAB L channel only, so colour balance is preserved |
+| `to_square()` | `squash` or `pad`; squash cuts black area from 28.5% to 13.4% |
+| `image_quality()` | Brightness and contrast measures, unusable-image detection |
+| `brightness_outliers()` | MAD-based outlier detection |
+| `dhash()` | Perceptual hash, used as a duplicate candidate generator |
+| `preprocess()` | The full six-stage pipeline |
 
-**Sira onemli.** CLAHE `auto_crop`'tan sonra cagrilmalidir; siyah cerceve
-kirpilmadan uygulanirsa histogram o genis siyah alan yuzunden bozulur.
-Normalizasyon boru hattinda degil, egitimdeki torchvision donusumlerinde yapilir
-— iki yerde birden normalize etmemek icin bilincli bir ayrim.
+**Order matters.** CLAHE must run *after* `auto_crop`: on an uncropped image the
+wide black border skews the histogram. Normalisation happens in the torchvision
+transforms at training time, not in the pipeline — keeping it in one place
+avoids normalising twice.
 
-## Veri
+Each processed directory carries a `_manifest.json` recording the settings that
+produced it, and the training scripts print it, so every run states which
+preprocessing it used.
 
-3662 goruntu, hepsi okunabilir, hepsi 3 kanalli RGB.
+## Data
 
-![Sinif dagilimi](reports/figures/01_class_distribution.png)
+3662 images, all readable, all three-channel RGB.
 
-Sinif dagilimi cok dengesiz — train'de No DR 1434, Severe 154 (9.3 kat):
+![Class distribution](reports/figures/01_class_distribution.png)
 
-![Dengesizlik](reports/figures/02_class_imbalance.png)
+The classes are heavily imbalanced — 1434 No DR against 154 Severe in training,
+a ratio of 9.3:
 
-Cozunurlukler cok degisken: 474x358 ile 4288x2848 arasinda 17 farkli boyut. En
-sik goruleni 1050x1050 (974 goruntu).
+![Imbalance](reports/figures/02_class_imbalance.png)
 
-![Goruntu ozellikleri](reports/figures/06_image_properties.png)
+Resolution varies widely: 17 distinct sizes between 474x358 and 4288x2848, the
+most common being 1050x1050 (974 images).
 
-Goruntu ozellikleri ozeti: [`reports/image_properties.md`](reports/image_properties.md).
-Ayrintili kalite raporu: [`reports/data_quality.md`](reports/data_quality.md).
-Problemli goruntu listesi: [`reports/problem_images.csv`](reports/problem_images.csv).
+![Image properties](reports/figures/06_image_properties.png)
 
-## Metrik secimi
+Detailed reports: [`reports/image_properties.md`](reports/image_properties.md),
+[`reports/data_quality.md`](reports/data_quality.md),
+[`reports/confounds_and_noise.md`](reports/confounds_and_noise.md).
 
-Asil metrik **quadratic weighted kappa (QWK)**, accuracy degil. Veri setinin
-%49'u "No DR"; hicbir sey ogrenmeyen "hep 0 tahmin et" modeli %49 accuracy alir
-ama QWK'da 0 alir. Yarismanin resmi metrigi de buydu.
+## Model and training
 
-Problem **ordinal**: 0-4 sirali bir siddet olcegi. Severe'i Mild sanmak,
-Severe'i Proliferative sanmaktan daha agir bir hata. `train.py` iki yaklasimi
-destekler:
+EfficientNet-B0 with ImageNet weights, 384px input.
 
-- `--mode cls` — 5 sinifli softmax, sinif agirlikli cross-entropy
-- `--mode reg` — tek cikisli regresyon, esikler valid uzerinde optimize edilir
+**Augmentation.** Random resized crop (0.85-1.0), horizontal *and vertical*
+flip, +/-20 degree rotation, mild brightness and contrast jitter. Vertical flip
+is included because a fundus photograph has no meaningful up/down orientation.
+Colour jitter is kept mild: large shifts would fight CLAHE, which normalises
+local contrast on purpose.
 
-Accuracy ve macro F1 de raporlanir. QWK ile macro F1'i birlikte okumak sart:
-QWK komsu hatalari hafif cezalandirdigi icin, azinlik siniflarindaki zayiflik
-yalnizca macro F1'de gorunur.
+![Augmentation](reports/figures/08_augmentation.png)
 
-## Testler
+**Loss.** Two modes, selected with `--mode`:
+
+- `reg` — single output with MSE, and four thresholds tuned on validation to map
+  the continuous prediction onto grades 0-4
+- `cls` — five-way softmax with class-weighted cross-entropy
+
+**Training loop.** AdamW, cosine learning-rate schedule, mixed precision, early
+stopping on validation QWK, and the best checkpoint kept rather than the last.
+
+## Choosing the metric
+
+The headline metric is **quadratic weighted kappa (QWK)**, not accuracy. 49% of
+the dataset is "No DR"; a model that learns nothing and always predicts 0 scores
+49% accuracy and 0 on QWK. It was also the competition's official metric.
+
+The problem is **ordinal**: grades 0-4 form a severity scale, not five unrelated
+categories. Calling a Severe case Mild is worse than calling it Proliferative.
+
+Accuracy and macro F1 are reported too, and QWK should be read together with
+macro F1: QWK penalises neighbouring mistakes lightly, so weakness on the
+minority classes shows up only in macro F1.
+
+## Things to know before trusting a number
+
+- **A metadata shortcut exists.** A model trained only on file properties —
+  resolution, aspect ratio, brightness, file size — reaches QWK 0.652 without
+  ever looking at the retina, because 92.5% of the 1050x1050 images are No DR.
+  Reported scores should be read alongside that floor.
+
+  ![Shortcut](reports/figures/07_resolution_confound.png)
+
+- **Label noise is around 16%.** Where the same image appears twice, the labels
+  disagree 29.1% of the time; a single label is correct roughly 84% of the time.
+  The model sits near that ceiling.
+
+- **Duplicates cross the splits.** 131 verified duplicate groups, 48 of them
+  spanning more than one split. `quality_report.py` writes
+  `reports/leaked_train_ids.csv` and `--exclude-leaked` drops those 49 training
+  images. Measured impact on the reported score was small (test QWK 0.8960 ->
+  0.8983) but the runs should exclude them regardless.
+
+- **dHash alone over-reports duplicates.** Every fundus image is a bright disc on
+  black, so different retinas collide: 181 of 312 candidate groups were false
+  positives. Candidates are verified at pixel level.
+
+- **The test split holds 366 images**, and only 17 of them are Severe. Select on
+  validation and look at test once. Per-class test numbers are not precise.
+
+- **Brightness thresholds must be data-aware.** Brightness ranges from 15.0 to
+  129.6 here, so a general-purpose "too bright" cutoff of 240 never fires.
+
+- **The Kaggle archive is inconsistent**: the validation split lives under
+  `val_images/`, not `valid_images/`. In the GCS bucket it is
+  `aptos_valid_images/`.
+
+- **`test.csv` ends with about 500 blank lines.** `prepare_bq_csv.py` drops
+  them; loading it raw with schema autodetection produces a broken table.
+
+- **Never commit the service account key.** `.gitignore` covers `*.json`.
+
+## Tests
 
 ```bash
-python tests/test_preprocessing.py    # pytest gerekmez
+python tests/test_preprocessing.py    # pytest not required
 ```
 
-Sentetik goruntuler kullanir, veri seti indirilmemis makinede de calisir.
+31 tests over the shared module, using synthetic images — they run on a machine
+that has never downloaded the dataset.
 
-## Bilinmesi gerekenler
+## Running long jobs
 
-- **Meta-veri kisayolu var.** Yalnizca dosya ozelliklerinden egitilen bir model,
-  retinaya hic bakmadan QWK 0.652 aliyor (1050x1050 goruntulerin %92.5'i No DR).
-  Rapor edilen skorlar bu tabanla birlikte okunmali. Ayrinti:
-  [`reports/confounds_and_noise.md`](reports/confounds_and_noise.md).
-- **Etiket gurultusu ~%16.** Duplicate ciftlerin %29.1'inde etiketler celisiyor;
-  tek etiketin dogru olma tahmini ~%84. Model bu tavana yakin.
-- **Islenmis klasorlerde `_manifest.json` var.** Hangi ayarlarla uretildigini
-  kaydeder; `train.py` bunu okuyup basar.
+Cross-validation takes hours. Start it and leave the machine alone:
 
-- **Duplicate goruntuler var.** 131 dogrulanmis grup, 48'i split'ler arasi.
-  Test goruntulerinin %6'sinin egitimde bir kopyasi var. Olculdu: bu kopyalarin
-  cikarilmasi test QWK'sini 0.8960'tan 0.8983'e tasiyor, yani skoru sismemis —
-  ama yine de duzeltilmesi gereken bir kusur.
-- **37 grupta ayni goruntu farkli etiketle isaretli.** Etiket gurultusu; modelin
-  hatalarinin bir kismi buradan gelebilir.
-- **Parlaklik esikleri hicbir goruntuyu elemedi.** Aralik 15.0-129.6; hicbir
-  goruntu 240 esigine yaklasmiyor. Yuzdelik tabanli esikler daha anlamli olur.
-- **Kaggle arsivinde klasor adi tutarsiz:** valid split'i `val_images/` altinda,
-  `valid_images/` degil. GCS bucket'inda ise `aptos_valid_images/`.
-- **`test.csv` sonunda ~500 bos satir var.** `prepare_bq_csv.py` bunlari duser;
-  autodetect ile ham yuklerseniz tablo bozulur.
-- **`test` split'i 366 satir.** Model secimini `valid` uzerinde yapin, `test`'e
-  sadece en sonda bir kez bakin.
-- **Servis hesabi anahtarini commit etmeyin.** `.gitignore` `*.json` iceriyor.
+- Do not start a second GPU job alongside it. Two training processes plus their
+  dataloader workers exhaust the Windows commit limit and the workers die with
+  `error code 1455`.
+- Do not edit `scripts/train_cv.py` while it runs. On Windows the dataloader
+  workers re-import the main script by path, so editing it kills them.
 
-## Dizin yapisi
+## Layout
 
 ```
 scripts/
-  preprocessing.py       ortak on isleme fonksiyonlari
-  prepare_bq_csv.py      etiket CSV'lerini temizler ve zenginlestirir
-  load_to_bigquery.py    etiketleri BigQuery'ye yukler
-  scan_images.py         goruntu ozelliklerini tarar -> BigQuery
-  image_report.py        goruntu ozellikleri ozeti
-  quality_report.py      kalite raporu + duplicate analizi
-  preprocess_images.py   goruntuleri egitime hazirlar
-  make_figures.py        rapor gorselleri
-  train.py               egitim + degerlendirme -> BigQuery (tek split)
-  train_cv.py            K katli capraz dogrulama -> BigQuery
-  run_seeds.sh           coklu seed karsilastirmasi
-  run_cv.sh              iki varyant icin 5 katli CV
-  run_squash_cv.sh       squash dogrulamasi (CV bitince zincirlenir)
-  confound_analysis.py   kisayol ozelligi ve etiket gurultusu analizi
-  analyze_runs.py        kosu karsilastirmasi ve hata analizi
+  preprocessing.py       shared preprocessing functions
+  prepare_bq_csv.py      clean and enrich the label CSVs
+  load_to_bigquery.py    load labels into BigQuery
+  scan_images.py         scan image properties -> BigQuery
+  image_report.py        image properties summary
+  quality_report.py      data quality + duplicate analysis
+  confound_analysis.py   shortcut features and label noise
+  preprocess_images.py   prepare images for training
+  make_figures.py        report figures
+  train.py               training and evaluation -> BigQuery (single split)
+  train_cv.py            K-fold cross-validation -> BigQuery
+  analyze_runs.py        run comparison and error analysis
+  run_cv.sh              cross-validation for every variant
+  run_seeds.sh           multi-seed comparison
 
 tests/
-  test_preprocessing.py  ortak modulun 31 testi (sentetik goruntulerle)
+  test_preprocessing.py  31 tests over the shared module
 
 reports/
-  data_quality.md        veri kalite raporu
-  problem_images.csv     problemli goruntu listesi
-  figures/               14 gorsel
+  image_properties.md    resolution, colour mode, pixel statistics
+  data_quality.md        quality checks and duplicates
+  confounds_and_noise.md metadata shortcut and label noise
+  problem_images.csv     flagged images
+  leaked_train_ids.csv   training images to exclude
+  figures/               16 figures
 
-data/                    surum kontrolu disinda (yeniden uretilebilir)
-models/                  surum kontrolu disinda
+data/                    not version controlled (reproducible)
+models/                  not version controlled
 ```

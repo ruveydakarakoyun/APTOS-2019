@@ -1,31 +1,45 @@
-"""APTOS ön isleme fonksiyonlari - ortak modul.
+"""APTOS fundus image preprocessing — shared module.
 
-Is bolumundeki her uc kisinin fonksiyonlari burada toplanir; boru hatti
-(`preprocess`) bunlari sirayla uygular:
+Every function the three-person work split produced lives here, and the
+pipeline (`preprocess`) applies them in order:
 
-    Oku -> Kalite Kontrolu -> Auto-Crop -> CLAHE -> Resize -> Normalization
+    Read -> Quality check -> Auto-crop -> CLAHE -> Square -> Resize
 
-Diger scriptler bu modulu import eder, kopyalamaz.
+Other scripts and the Colab notebook import from this module rather than
+keeping their own copies, so a change here reaches everything at once.
 """
 import cv2
 import numpy as np
 
-# ImageNet istatistikleri - on egitimli agirliklarla uyumlu olmasi icin
+# ImageNet statistics, to match the pretrained backbone weights.
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
+# Unusable-image thresholds. These answer "does this image carry any
+# information at all?" — a near-black or blown-out white frame — not "is this
+# image unusual?". Measured brightness in this dataset spans 15.0-129.6, so in
+# practice these never fire. That is a sign the data is clean, not a bug; use
+# brightness_outliers() to find unusual-but-usable images.
+HARD_DARK = 8.0
+HARD_BRIGHT = 250.0
 
-# --------------------------------------------------------- 1. kisi: auto-crop
+
+# ------------------------------------------------------------------ auto-crop
 
 def auto_crop(img, tol=7):
-    """Retina disindaki siyah cerceveyi keser.
+    """Remove the black frame surrounding the retina.
 
-    Fundus fotograflari dairesel bir alan iceren dikdortgen karelerdir; kenarlar
-    tamamen siyahtir ve hem yer kaplar hem de sonraki adimlarda (ozellikle
-    CLAHE'nin histograminda) sonucu bozar.
+    Fundus photographs are rectangles containing a circular field of view; the
+    corners are black. Cropping them saves space and, more importantly, keeps
+    that dead area out of CLAHE's histogram.
 
-    img: BGR veya gri numpy dizisi
-    tol: bu esigin uzerindeki piksel "icerik" sayilir
+    The tol=7 threshold was validated empirically: cropping at tol=7 and tol=15
+    give nearly identical results (11.25% vs 11.48% area removed), meaning the
+    retina edge sits well above both and the crop boundary is on a stable
+    plateau. tol=2 under-crops, leaving sensor noise inside.
+
+    img: BGR or grayscale numpy array
+    tol: pixels above this value count as content
     """
     if img.ndim == 2:
         mask = img > tol
@@ -40,12 +54,12 @@ def auto_crop(img, tol=7):
 
     rows, cols = mask.any(1), mask.any(0)
     cropped = img[np.ix_(rows, cols)]
-    # Tamami esigin altinda kalan patolojik durumda orijinali koru
+    # Guard against the pathological case where everything falls below tol.
     return img if 0 in cropped.shape[:2] else cropped
 
 
 def pad_to_square(img):
-    """En-boy oranini bozmadan kareye tamamlar (resize oncesi)."""
+    """Pad to a square with black bars, preserving the aspect ratio."""
     h, w = img.shape[:2]
     if h == w:
         return img
@@ -57,43 +71,59 @@ def pad_to_square(img):
     return out
 
 
-# ------------------------------------------------------------- 2. kisi: CLAHE
+def to_square(img, size, mode="squash"):
+    """Bring an image to the square model input size.
+
+    The geometry of this dataset was measured on 80 samples: the retinal disc is
+    clipped by the sensor frame at the top (75% of images) and bottom (52%), and
+    never at the sides. So a cropped image is naturally wide (median aspect
+    ratio 1.27) and already 86.5% retina.
+
+      pad    : adds black bars. Preserves the aspect ratio, but 28.5% of the
+               512px output ends up black — the bars stack on top of the corner
+               gaps that a circular field of view already leaves behind.
+      squash : resizes directly. Introduces a ~1.27x horizontal compression,
+               but it is consistent across images and no tissue is lost. Black
+               area drops to 13.4%, giving 21% more effective retina pixels.
+
+    A centre-square crop was also measured: it cuts black to 6.2% but discards
+    10.6% of the retina. Peripheral lesions matter, so it was rejected.
+    """
+    if mode == "pad":
+        img = pad_to_square(img)
+    elif mode != "squash":
+        raise ValueError(f"unknown square_mode: {mode}")
+    return cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA)
+
+
+# ---------------------------------------------------------------------- CLAHE
 
 def apply_clahe(img, clip_limit=2.0, tile_grid=(8, 8)):
-    """Kontrasti yerel olarak artirir, damarlari belirginlestirir.
+    """Boost local contrast to make vessels and lesions stand out.
 
-    CLAHE yalnizca LAB uzayinin L (parlaklik) kanalina uygulanir. Uc RGB kanalina
-    ayri ayri uygulamak renk dengesini bozar ve fundus goruntulerinde yapay bir
-    renklenme birakir.
+    CLAHE is applied to the L (lightness) channel of LAB only. Applying it to
+    the three RGB channels separately breaks colour balance and leaves an
+    artificial tint on fundus images.
 
-    Not: bu fonksiyon auto_crop'tan SONRA cagrilmalidir. Siyah cerceve
-    kirpilmadan uygulanirsa histogram o genis siyah alan yuzunden bozulur.
+    Call this *after* auto_crop. Run on an uncropped image, the wide black
+    border skews the histogram.
     """
     if img.ndim == 2:
         return cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid).apply(img)
 
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    l = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid).apply(l)
-    return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
+    lightness, a, b = cv2.split(lab)
+    lightness = cv2.createCLAHE(clipLimit=clip_limit,
+                                tileGridSize=tile_grid).apply(lightness)
+    return cv2.cvtColor(cv2.merge((lightness, a, b)), cv2.COLOR_LAB2BGR)
 
 
-# ----------------------------------------------------- 3. kisi: kalite kontrol
-
-# Kullanilamaz goruntu esikleri. Bunlar "olagandisi" degil "bilgi tasimiyor"
-# esikleridir: neredeyse tamamen siyah bir kare veya asiri pozlanmis beyaz bir
-# kare. Veri setinde olculen aralik 15.0-129.6 oldugu icin bu esikler pratikte
-# hicbir goruntuyu elemiyor - bu bir kusur degil, verinin temiz oldugunun
-# gostergesi. Olagandisi ama kullanilabilir goruntuleri yakalamak icin
-# brightness_outliers() kullanin.
-HARD_DARK = 8.0
-HARD_BRIGHT = 250.0
-
+# ------------------------------------------------------------- quality control
 
 def image_quality(img, dark_threshold=HARD_DARK, bright_threshold=HARD_BRIGHT):
-    """Goruntunun temel kalite olculeri ve kullanilabilir olup olmadigi.
+    """Basic quality measures and whether the image is usable at all.
 
-    Doner: (gecti_mi, olculer sozlugu)
+    Returns: (passed, metrics dict)
     """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
     mean = float(gray.mean())
@@ -109,37 +139,43 @@ def image_quality(img, dark_threshold=HARD_DARK, bright_threshold=HARD_BRIGHT):
 
 
 def brightness_outliers(values, k=3.5):
-    """Dagilimdan sapan goruntuleri medyan mutlak sapma (MAD) ile isaretler.
+    """Flag images that deviate from the distribution, using median absolute
+    deviation (MAD).
 
-    Sabit esik yerine bunu kullanmanin sebebi: fundus fotograflari dogasi geregi
-    koyu, dolayisiyla genel amacli bir "asiri karanlik" esigi ya hicbir seyi
-    eler ya da her seyi. MAD medyana gore olctugu icin verinin kendi olcegine
-    uyum saglar ve ucdegerlerden etkilenmez (standart sapmanin aksine).
+    Why not a fixed threshold: fundus photographs are inherently dark, so a
+    general-purpose "too bright" cutoff either flags nothing or flags
+    everything. MAD measures against the median and is unaffected by outliers,
+    so it adapts to the data's own scale.
 
-    Yuzdelik tabanli bir esikten farki onemli: yuzdelik her zaman sabit bir
-    oran isaretler, veri tamamen temiz olsa bile. MAD ise gercekten sapan bir
-    sey yoksa hicbir sey isaretlemez.
+    Why not a percentile: a percentile always flags a fixed fraction, even when
+    the data is perfectly clean. MAD flags nothing when nothing genuinely
+    deviates — so a zero here is informative.
 
-    values: parlaklik degerleri dizisi
-    k: kac MAD uzaklik ucdeger sayilir (3.5 yaygin secim)
+    values: array of brightness measurements
+    k: how many MADs count as an outlier (3.5 is a common choice)
 
-    Doner: her deger icin bool dizi (True = ucdeger)
+    Returns: boolean array, True where the value is an outlier
     """
     v = np.asarray(values, dtype=float)
     median = np.median(v)
     mad = np.median(np.abs(v - median))
     if mad == 0:
         return np.zeros(len(v), dtype=bool)
-    # 0.6745 carpani MAD'i normal dagilimda standart sapmaya denk hale getirir
+    # The 0.6745 factor scales MAD to be comparable to a standard deviation
+    # under a normal distribution.
     return np.abs(0.6745 * (v - median) / mad) > k
 
 
 def dhash(img, size=8):
-    """Algisal hash - ayni goruntunun yeniden boyutlandirilmis/sikistirilmis
-    kopyalarini yakalar. Bit bit farkli olan dosyalar ayni hash'i verebilir,
-    bu yuzden duplicate tespitinde dosya hash'inden daha kullanislidir.
+    """Perceptual hash — catches resized or recompressed copies of the same
+    image, which a byte-level file hash would miss.
 
-    Doner: 16 haneli onaltilik dize
+    Note this is a *candidate generator*, not proof: every fundus image is a
+    bright disc on black, so different retinas can collide. Verify candidates
+    at pixel level before calling them duplicates. Measured on this dataset,
+    181 of 312 dHash candidate groups were false positives.
+
+    Returns: 16-character hex string
     """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
     small = cv2.resize(gray, (size + 1, size), interpolation=cv2.INTER_AREA)
@@ -147,50 +183,26 @@ def dhash(img, size=8):
     return f"{int(''.join('1' if b else '0' for b in bits.flatten()), 2):016x}"
 
 
-# ------------------------------------------------------------------ boru hatti
-
-def to_square(img, size, mode="squash"):
-    """Goruntuyu kare cikti boyutuna getirir.
-
-    APTOS goruntulerinin geometrisi olculdu: retina dairesi ustten (%75) ve
-    alttan (%52) sensor cercevesiyle kesiliyor, yanlardan asla. Yani kirpilmis
-    goruntu dogal olarak genis (en-boy medyani 1.27) ve zaten %86.5 retina.
-
-      pad    : kareye siyah bant ekler. En-boy orani korunur ama 512px ciktinin
-               %28.5'i siyah olur - eklenen bantlar zaten var olan kose
-               bosluklarinin ustune biner.
-      squash : dogrudan yeniden boyutlandirir. Yatayda ~1.27x sikisma olur ama
-               bu tum goruntulerde tutarlidir ve hicbir doku kaybedilmez.
-               Siyah alan %13.4'e duser, etkin retina pikseli %21 artar.
-
-    Merkez kare kirpma da denendi: siyahi %6.2'ye indiriyor ama retinanin
-    %10.6'sini atiyor. Periferik lezyonlar onemli oldugu icin tercih edilmedi.
-    """
-    if mode == "pad":
-        img = pad_to_square(img)
-    elif mode != "squash":
-        raise ValueError(f"bilinmeyen square_mode: {mode}")
-    return cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA)
-
+# ------------------------------------------------------------------- pipeline
 
 def preprocess(path, size=512, use_clahe=True, normalize=False,
                clip_limit=2.0, quality_check=True, square_mode="squash"):
-    """Tam boru hatti: oku -> kalite -> crop -> CLAHE -> resize -> normalize.
+    """Full pipeline: read -> quality -> crop -> CLAHE -> square -> normalize.
 
-    path: goruntu dosyasi
-    size: cikti kenar uzunlugu
-    use_clahe: CLAHE uygulansin mi (karsilastirma kosulari icin kapatilabilir)
-    normalize: True ise float32 ve ImageNet normalizasyonu doner (model girdisi);
-               False ise uint8 BGR doner (diske yazmak icin)
+    path: image file
+    size: output edge length
+    use_clahe: whether to apply CLAHE (turn off to build a control set)
+    normalize: True returns float32 with ImageNet normalisation (model input);
+               False returns uint8 BGR (for writing to disk)
 
-    Doner: (goruntu | None, bilgi sozlugu). Okunamayan veya kaliteyi geciremeyen
-    goruntulerde goruntu None doner ve sebep bilgi["error"] icinde olur.
+    Returns: (image | None, info dict). Unreadable images and images failing
+    the quality gate return None, with the reason in info["error"].
     """
     info = {"path": str(path)}
 
     img = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if img is None:
-        info["error"] = "okunamadi"
+        info["error"] = "unreadable"
         return None, info
 
     info["orig_height"], info["orig_width"] = img.shape[:2]
@@ -199,7 +211,7 @@ def preprocess(path, size=512, use_clahe=True, normalize=False,
         ok, metrics = image_quality(img)
         info.update(metrics)
         if not ok:
-            info["error"] = "asiri karanlik" if metrics["too_dark"] else "asiri parlak"
+            info["error"] = "too dark" if metrics["too_dark"] else "too bright"
             return None, info
 
     img = auto_crop(img)

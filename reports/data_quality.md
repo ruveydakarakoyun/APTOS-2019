@@ -1,58 +1,57 @@
-# Veri Kalite Raporu
+# Data Quality Report
 
-Kaynak: 3662 taranan goruntu, 3662 etiket satiri.
+Source: 3662 scanned images, 3662 label rows.
 
-## Ozet
+## Summary
 
-| kontrol | sonuc |
+| check | result |
 |---|---|
-| Okunamayan goruntu | 0 |
-| Etiketi olmayan goruntu | 0 |
-| Goruntusu olmayan etiket | 0 |
-| Kullanilamayacak kadar karanlik | 0 |
-| Kullanilamayacak kadar parlak | 0 |
-| Parlaklik ucdegeri (MAD k=3.5) | 0 |
-| Duplicate grup (dogrulanmis) | 131 |
-| Split'ler arasi duplicate | 48 |
+| Unreadable images | 0 |
+| Images without a label | 0 |
+| Labels without an image | 0 |
+| Unusably dark | 0 |
+| Unusably bright | 0 |
+| Brightness outliers (MAD k=3.5) | 0 |
+| Duplicate groups (verified) | 131 |
+| Cross-split duplicates | 48 |
 
-## Bozuk / acilmayan goruntuler
+## Corrupt / unreadable images
 
-- Taranan: **3662**
-- Okunamayan: **0**
+- Scanned: **3662**
+- Unreadable: **0**
 
-## Etiket ve dosya eslesmesi
+## Label and file correspondence
 
-- Etikette olup goruntusu olmayan: **0**
-- Goruntusu olup etiketi olmayan: **0**
-- Islenmis klasorde eksik: **0**
+- Labelled but no image: **0**
+- Image but no label: **0**
+- Missing from the processed set: **0**
 
-## Parlaklik kontrolu
+## Brightness checks
 
-Iki ayri olcut kullaniliyor: kullanilabilirlik icin sabit esikler, olagandisilik icin dagilim tabanli ucdeger tespiti.
+Two measures are used: fixed thresholds for usability, and a distribution-based test for unusualness.
 
-| olcut | esik | isaretlenen |
+| measure | threshold | flagged |
 |---|---|---|
-| Kullanilamayacak kadar karanlik | `< 8.0` | 0 |
-| Kullanilamayacak kadar parlak | `> 250.0` | 0 |
-| Dagilim ucdegeri | MAD, k=3.5 | 0 |
+| Unusably dark | `< 8.0` | 0 |
+| Unusably bright | `> 250.0` | 0 |
+| Distribution outlier | MAD, k=3.5 | 0 |
 
-- Parlaklik araligi: 15.0 - 129.6 (medyan 69.0)
-- Kontrast (std) araligi: 9.6 - 75.8 (medyan 40.1)
+- Brightness range: 15.0 - 129.6 (median 69.0)
+- Contrast (std) range: 9.6 - 75.8 (median 40.1)
 
-MAD ucdegeri bulunmadi. Bu anlamli bir sifir: olcut verinin kendi olcegine gore calisiyor, dolayisiyla parlaklik dagiliminda gercekten sapan bir goruntu yok demektir.
-- En dusuk %2 kontrast (74 goruntu): std < 18.6 - CLAHE'nin en cok fayda saglayacagi grup
+No MAD outliers. This is an informative zero: the measure adapts to the data's own scale, so it means nothing in the brightness distribution genuinely deviates.
 
-## Duplicate goruntuler
+## Duplicate images
 
-Iki asamali tespit: dHash ucuz bir aday ureteci, ardindan her aday cifti piksel duzeyinde dogrulaniyor.
+Two-stage detection: dHash is a cheap candidate generator, then every candidate pair is verified at pixel level.
 
-- dHash adayi grup: **312**
-- Piksel duzeyinde dogrulanan grup: **131**
-- Yanlis pozitif elenen: **181**
-- Etkilenen goruntu: **270**
-- Split'ler arasi: **48**
+- dHash candidate groups: **312**
+- Verified at pixel level: **131**
+- False positives removed: **181**
+- Images affected: **270**
+- Spanning more than one split: **48**
 
-| goruntuler | split'ler |
+| images | splits |
 |---|---|
 | b019a49787c1, e1fb532f55df | train |
 | 6253f23229b1, 76cfe8967f7d | train |
@@ -186,4 +185,4 @@ Iki asamali tespit: dHash ucuz bir aday ureteci, ardindan her aday cifti piksel 
 | 2923971566fe, badb5ff8d3c7 | train |
 | 9b32e8ef0ca0, a15652b22ab8 | train |
 
-> Split'ler arasi duplicate skoru sisirir: ayni goruntu hem egitimde hem testte gorunuyorsa test sonucu iyimser cikar. Bunlarin egitimden cikarilmasi gerekir.
+> Cross-split duplicates inflate the reported score: if the same image appears in both training and test, the test result is optimistic. These should be dropped from training.

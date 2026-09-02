@@ -1,15 +1,16 @@
-"""Rapor ve sunum icin gorselleri uretir.
+"""Produce the figures used in the report and the presentation.
 
-Uretilenler (reports/figures/ altina):
-  01_class_distribution.png    sinif dagilimi, uc split yan yana
-  02_class_imbalance.png       dengesizlik orani ve yuzdeler
-  03_autocrop_<evre>.png       auto-crop oncesi/sonrasi, her evreden bir ornek
-  04_clahe_<evre>.png          CLAHE oncesi/sonrasi, her evreden bir ornek
-  05_pipeline_stages.png       boru hattinin alti asamasi tek gorselde
-  06_image_properties.png      cozunurluk, en-boy orani, parlaklik dagilimlari
-  07_resolution_confound.png   cozunurluk-sinif kisayol iliskisi
+Written to reports/figures/:
+  01_class_distribution.png    class balance across the three splits
+  02_class_imbalance.png       imbalance ratio and per-split percentages
+  03_autocrop_<grade>.png      auto-crop before/after, one sample per grade
+  04_clahe_<grade>.png         CLAHE before/after, one sample per grade
+  05_pipeline_stages.png       every stage of the preprocessing pipeline
+  06_image_properties.png      resolution, aspect ratio, brightness histograms
+  07_resolution_confound.png   the resolution-to-class shortcut
+  08_augmentation.png          training augmentations applied to one image
 
-Kullanim:
+Usage:
     python scripts/make_figures.py
 """
 import pathlib
@@ -38,19 +39,13 @@ SOURCE_DIRS = {
 }
 
 GRADES = ["No DR", "Mild", "Moderate", "Severe", "Proliferative DR"]
-# ICDRSS siddet rampasi - raporda ve grafiklerde ayni renkler
+# ICDRSS severity ramp - the same colours are used in every figure and report.
 COLORS = ["#15803D", "#A16207", "#C2410C", "#B91C1C", "#7B1D1D"]
 
 plt.rcParams.update({
-    "figure.dpi": 130,
-    "savefig.dpi": 130,
-    "font.size": 10,
-    "axes.titlesize": 11,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.grid": True,
-    "grid.alpha": 0.25,
-    "grid.linestyle": "-",
+    "figure.dpi": 130, "savefig.dpi": 130, "font.size": 10, "axes.titlesize": 11,
+    "axes.spines.top": False, "axes.spines.right": False,
+    "axes.grid": True, "grid.alpha": 0.25, "grid.linestyle": "-",
     "figure.facecolor": "white",
 })
 
@@ -59,8 +54,12 @@ def bgr2rgb(img):
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
 
+def black_share(img):
+    return (cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) <= 7).mean() * 100
+
+
 def sample_per_grade(labels, split="train"):
-    """Her evreden tekrarlanabilir bir ornek secer."""
+    """One reproducible sample per grade."""
     sub = labels[labels.split == split]
     out = {}
     for g in range(5):
@@ -70,7 +69,7 @@ def sample_per_grade(labels, split="train"):
     return out
 
 
-# ------------------------------------------------------------ 1. kisi: sinif
+# --------------------------------------------------------------- class figures
 
 def fig_class_distribution(labels):
     fig, axes = plt.subplots(1, 3, figsize=(13, 4), sharey=True)
@@ -81,12 +80,13 @@ def fig_class_distribution(labels):
         total = counts.sum()
         for bar, v in zip(bars, counts.values):
             ax.text(bar.get_x() + bar.get_width() / 2, v + total * 0.015,
-                    f"{v}\n%{v / total * 100:.1f}", ha="center", va="bottom", fontsize=8.5)
+                    f"{v}\n{v / total * 100:.1f}%", ha="center", va="bottom",
+                    fontsize=8.5)
         ax.set_title(f"{split}  (n={total})")
-        ax.set_xlabel("ICDRSS evresi")
+        ax.set_xlabel("ICDRSS grade")
         ax.margins(y=0.18)
-    axes[0].set_ylabel("goruntu sayisi")
-    fig.suptitle("Sinif dagilimi", fontsize=13, y=1.0)
+    axes[0].set_ylabel("images")
+    fig.suptitle("Class distribution", fontsize=13, y=1.0)
     fig.legend([plt.Rectangle((0, 0), 1, 1, color=c) for c in COLORS], GRADES,
                loc="lower center", ncol=5, frameon=False, bbox_to_anchor=(0.5, -0.06))
     fig.tight_layout()
@@ -96,8 +96,8 @@ def fig_class_distribution(labels):
 
 def fig_imbalance(labels):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.2))
-
     splits = ["train", "valid", "test"]
+
     ratios = []
     for split in splits:
         c = labels[labels.split == split].diagnosis.value_counts()
@@ -106,8 +106,8 @@ def fig_imbalance(labels):
     for bar, v in zip(bars, ratios):
         ax1.text(bar.get_x() + bar.get_width() / 2, v + 0.2, f"{v:.2f}x",
                  ha="center", fontsize=10, fontweight="bold")
-    ax1.set_title("Sinif dengesizlik orani (en cok / en az)")
-    ax1.set_ylabel("kat")
+    ax1.set_title("Class imbalance ratio (most / least frequent)")
+    ax1.set_ylabel("ratio")
     ax1.margins(y=0.2)
 
     bottom = np.zeros(3)
@@ -118,27 +118,26 @@ def fig_imbalance(labels):
         ax2.barh(splits, vals, left=bottom, color=COLORS[g], label=f"{g} {GRADES[g]}")
         for i, (v, b) in enumerate(zip(vals, bottom)):
             if v > 6:
-                ax2.text(b + v / 2, i, f"%{v:.0f}", ha="center", va="center",
+                ax2.text(b + v / 2, i, f"{v:.0f}%", ha="center", va="center",
                          color="white", fontsize=9, fontweight="bold")
         bottom += vals
-    ax2.set_title("Sinif yuzdeleri")
+    ax2.set_title("Class shares")
     ax2.set_xlabel("%")
     ax2.set_xlim(0, 100)
     ax2.grid(False)
-    ax2.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncol=3, frameon=False,
-               fontsize=8.5)
+    ax2.legend(loc="upper center", bbox_to_anchor=(0.5, -0.14), ncol=3,
+               frameon=False, fontsize=8.5)
 
     fig.tight_layout()
     fig.savefig(FIG / "02_class_imbalance.png", bbox_inches="tight")
     plt.close(fig)
 
 
-# ------------------------------------------------ 1. ve 2. kisi: once/sonra
+# ------------------------------------------------------------- before / after
 
 def fig_autocrop(samples):
     for grade, id_code in samples.items():
-        path = SOURCE_DIRS["train"] / f"{id_code}.png"
-        raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        raw = cv2.imread(str(SOURCE_DIRS["train"] / f"{id_code}.png"), cv2.IMREAD_COLOR)
         if raw is None:
             continue
         cropped = auto_crop(raw)
@@ -146,14 +145,14 @@ def fig_autocrop(samples):
                   / (raw.shape[0] * raw.shape[1])) * 100
 
         fig, axes = plt.subplots(1, 2, figsize=(9, 4.6))
-        for ax, im, t in [(axes[0], raw, f"Ham  {raw.shape[1]}x{raw.shape[0]}"),
+        for ax, im, t in [(axes[0], raw, f"Raw  {raw.shape[1]}x{raw.shape[0]}"),
                           (axes[1], cropped,
                            f"Auto-crop  {cropped.shape[1]}x{cropped.shape[0]}")]:
             ax.imshow(bgr2rgb(im))
             ax.set_title(t, fontsize=10)
             ax.axis("off")
-        fig.suptitle(f"Auto-crop  |  Evre {grade} - {GRADES[grade]}  |  "
-                     f"kazanilan alan %{saving:.1f}",
+        fig.suptitle(f"Auto-crop  |  Grade {grade} - {GRADES[grade]}  |  "
+                     f"{saving:.1f}% of the area removed",
                      fontsize=11.5, color=COLORS[grade], y=1.0)
         fig.tight_layout()
         fig.savefig(FIG / f"03_autocrop_evre{grade}.png", bbox_inches="tight")
@@ -162,23 +161,22 @@ def fig_autocrop(samples):
 
 def fig_clahe(samples):
     for grade, id_code in samples.items():
-        path = SOURCE_DIRS["train"] / f"{id_code}.png"
-        raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        raw = cv2.imread(str(SOURCE_DIRS["train"] / f"{id_code}.png"), cv2.IMREAD_COLOR)
         if raw is None:
             continue
         cropped = auto_crop(raw)
         enhanced = apply_clahe(cropped)
-
         s_before = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY).std()
         s_after = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY).std()
 
         fig, axes = plt.subplots(1, 2, figsize=(9, 4.6))
-        for ax, im, t in [(axes[0], cropped, f"Auto-crop sonrasi  (kontrast {s_before:.1f})"),
-                          (axes[1], enhanced, f"CLAHE sonrasi  (kontrast {s_after:.1f})")]:
+        for ax, im, t in [
+                (axes[0], cropped, f"After auto-crop  (contrast {s_before:.1f})"),
+                (axes[1], enhanced, f"After CLAHE  (contrast {s_after:.1f})")]:
             ax.imshow(bgr2rgb(im))
             ax.set_title(t, fontsize=10)
             ax.axis("off")
-        fig.suptitle(f"CLAHE  |  Evre {grade} - {GRADES[grade]}", fontsize=11.5,
+        fig.suptitle(f"CLAHE  |  Grade {grade} - {GRADES[grade]}", fontsize=11.5,
                      color=COLORS[grade], y=1.0)
         fig.tight_layout()
         fig.savefig(FIG / f"04_clahe_evre{grade}.png", bbox_inches="tight")
@@ -186,15 +184,12 @@ def fig_clahe(samples):
 
 
 def fig_pipeline(samples):
-    """Boru hattinin her asamasini tek gorselde gosterir."""
+    """Every stage of the preprocessing pipeline in one figure."""
     grade = 2 if 2 in samples else next(iter(samples))
-    path = SOURCE_DIRS["train"] / f"{samples[grade]}.png"
-    raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    raw = cv2.imread(str(SOURCE_DIRS["train"] / f"{samples[grade]}.png"),
+                     cv2.IMREAD_COLOR)
     if raw is None:
         return
-
-    def siyah_oran(im):
-        return (cv2.cvtColor(im, cv2.COLOR_BGR2GRAY) <= 7).mean() * 100
 
     cropped = auto_crop(raw)
     enhanced = apply_clahe(cropped)
@@ -204,13 +199,13 @@ def fig_pipeline(samples):
             - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
 
     stages = [
-        (bgr2rgb(raw), f"1. Oku\n{raw.shape[1]}x{raw.shape[0]}"),
-        (bgr2rgb(cropped), f"2. Kalite + auto-crop\n{cropped.shape[1]}x{cropped.shape[0]}"),
-        (bgr2rgb(enhanced), "3. CLAHE\nLAB-L kanali"),
-        (bgr2rgb(padded), f"(pad ile olsaydi)\nsiyah %{siyah_oran(padded):.0f}"),
-        (bgr2rgb(squashed), f"4-5. Squash + resize\n512x512, siyah %{siyah_oran(squashed):.0f}"),
+        (bgr2rgb(raw), f"1. Read\n{raw.shape[1]}x{raw.shape[0]}"),
+        (bgr2rgb(cropped), f"2. Quality + auto-crop\n{cropped.shape[1]}x{cropped.shape[0]}"),
+        (bgr2rgb(enhanced), "3. CLAHE\nLAB L channel"),
+        (bgr2rgb(padded), f"(if padded instead)\n{black_share(padded):.0f}% black"),
+        (bgr2rgb(squashed), f"4-5. Squash + resize\n512x512, {black_share(squashed):.0f}% black"),
         (np.clip((norm - norm.min()) / (norm.max() - norm.min()), 0, 1),
-         "6. Normalizasyon\nImageNet ort/std"),
+         "6. Normalise\nImageNet mean/std"),
     ]
 
     fig, axes = plt.subplots(1, 6, figsize=(17, 3.4))
@@ -218,48 +213,48 @@ def fig_pipeline(samples):
         ax.imshow(im)
         ax.set_title(title, fontsize=9)
         ax.axis("off")
-    fig.suptitle(f"On isleme boru hatti  |  Evre {grade} - {GRADES[grade]}",
+    fig.suptitle(f"Preprocessing pipeline  |  Grade {grade} - {GRADES[grade]}",
                  fontsize=12.5, y=1.04)
     fig.tight_layout()
     fig.savefig(FIG / "05_pipeline_stages.png", bbox_inches="tight")
     plt.close(fig)
 
 
-# ------------------------------------------------- 2. kisi: goruntu ozellikleri
+# ------------------------------------------------------------ image properties
 
 def fig_image_properties(stats):
     ok = stats[stats.readable]
     fig, axes = plt.subplots(2, 2, figsize=(12, 7.5))
 
     axes[0, 0].hist(ok.width, bins=40, color="#0F766E", alpha=.85)
-    axes[0, 0].set_title("Genislik dagilimi")
-    axes[0, 0].set_xlabel("piksel")
+    axes[0, 0].set_title("Width distribution")
+    axes[0, 0].set_xlabel("pixels")
 
     axes[0, 1].hist(ok.aspect_ratio, bins=40, color="#0F766E", alpha=.85)
-    axes[0, 1].axvline(1.0, color="#B91C1C", ls="--", lw=1.2, label="kare (1.0)")
-    axes[0, 1].set_title("En-boy orani")
+    axes[0, 1].axvline(1.0, color="#B91C1C", ls="--", lw=1.2, label="square (1.0)")
+    axes[0, 1].set_title("Aspect ratio")
     axes[0, 1].legend(frameon=False, fontsize=9)
 
     axes[1, 0].hist(ok.brightness, bins=40, color="#A16207", alpha=.85)
-    axes[1, 0].set_title("Ortalama parlaklik")
+    axes[1, 0].set_title("Mean brightness")
     axes[1, 0].set_xlabel("0-255")
 
     axes[1, 1].hist(ok.contrast_std, bins=40, color="#A16207", alpha=.85)
-    axes[1, 1].set_title("Kontrast (standart sapma)")
+    axes[1, 1].set_title("Contrast (standard deviation)")
     axes[1, 1].set_xlabel("0-255")
 
-    fig.suptitle(f"Ham goruntu ozellikleri  (n={len(ok)})", fontsize=13, y=1.0)
+    fig.suptitle(f"Raw image properties  (n={len(ok)})", fontsize=13, y=1.0)
     fig.tight_layout()
     fig.savefig(FIG / "06_image_properties.png", bbox_inches="tight")
     plt.close(fig)
 
 
 def fig_confound(stats, labels):
-    """Cozunurluk ile sinif arasindaki kisayol iliskisi.
+    """The resolution-to-class shortcut.
 
-    Bu grafik projenin en onemli bulgusunu gosteriyor: 1050x1050 goruntuler
-    neredeyse tamamen No DR. Model retinaya bakmadan bile bu iliskiden
-    faydalanabilir.
+    This is the project's most important finding: 1050x1050 images are almost
+    entirely No DR, so a model can exploit the correlation without reading the
+    retina at all.
     """
     m = stats[stats.readable].merge(labels[["id_code", "diagnosis"]], on="id_code")
     sq = m[(m.width == 1050) & (m.height == 1050)]
@@ -267,37 +262,84 @@ def fig_confound(stats, labels):
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 4.4))
 
-    x = np.arange(5)
-    w = 0.38
+    x, w = np.arange(5), 0.38
     a = [(sq.diagnosis == g).mean() * 100 for g in range(5)]
     b = [(rest.diagnosis == g).mean() * 100 for g in range(5)]
     ax1.bar(x - w / 2, a, w, label=f"1050x1050  (n={len(sq)})", color="#B91C1C")
-    ax1.bar(x + w / 2, b, w, label=f"diger cozunurlukler  (n={len(rest)})", color="#0F766E")
+    ax1.bar(x + w / 2, b, w, label=f"other resolutions  (n={len(rest)})", color="#0F766E")
     for i, (va, vb) in enumerate(zip(a, b)):
         ax1.text(i - w / 2, va + 1.5, f"{va:.0f}", ha="center", fontsize=8.5)
         ax1.text(i + w / 2, vb + 1.5, f"{vb:.0f}", ha="center", fontsize=8.5)
     ax1.set_xticks(x)
     ax1.set_xticklabels([f"{i}\n{GRADES[i].split()[0]}" for i in range(5)], fontsize=8.5)
-    ax1.set_ylabel("split icindeki oran (%)")
-    ax1.set_title("Cozunurluk sinifi belli ediyor")
+    ax1.set_ylabel("share within group (%)")
+    ax1.set_title("Resolution gives the class away")
     ax1.legend(frameon=False, fontsize=9)
     ax1.margins(y=0.15)
 
-    # megapiksel dagilimi, sinif bazinda
-    data = [m[m.diagnosis == g].megapixels.values for g in range(5)]
-    bp = ax2.boxplot(data, patch_artist=True, widths=0.6,
+    bp = ax2.boxplot([m[m.diagnosis == g].megapixels.values for g in range(5)],
+                     patch_artist=True, widths=0.6,
                      medianprops=dict(color="white", linewidth=1.5))
     for patch, c in zip(bp["boxes"], COLORS):
         patch.set_facecolor(c)
     ax2.set_xticklabels([f"{i}" for i in range(5)])
-    ax2.set_xlabel("ICDRSS evresi")
-    ax2.set_ylabel("megapiksel")
-    ax2.set_title("Goruntu boyutu evreye gore degisiyor")
+    ax2.set_xlabel("ICDRSS grade")
+    ax2.set_ylabel("megapixels")
+    ax2.set_title("Image size varies with grade")
 
-    fig.suptitle("Meta-veri kisayolu: retinaya bakmadan QWK 0.652",
+    fig.suptitle("Metadata shortcut: QWK 0.652 without looking at the retina",
                  fontsize=13, y=1.02)
     fig.tight_layout()
     fig.savefig(FIG / "07_resolution_confound.png", bbox_inches="tight")
+    plt.close(fig)
+
+
+# ------------------------------------------------------------- augmentation
+
+def fig_augmentation(samples):
+    """Training augmentations applied to a single image.
+
+    Vertical flip is included because a fundus photograph has no meaningful
+    up/down orientation; rotation and scale jitter cover the variation in how
+    the camera was aimed. Colour jitter is kept mild - large shifts would work
+    against CLAHE, which normalises local contrast on purpose.
+    """
+    import torch
+    from torchvision import transforms as T
+    from PIL import Image
+
+    grade = 2 if 2 in samples else next(iter(samples))
+    raw = cv2.imread(str(SOURCE_DIRS["train"] / f"{samples[grade]}.png"),
+                     cv2.IMREAD_COLOR)
+    if raw is None:
+        return
+
+    base = to_square(apply_clahe(auto_crop(raw)), 384, mode="squash")
+    pil = Image.fromarray(bgr2rgb(base))
+
+    train_tf = T.Compose([
+        T.RandomResizedCrop(384, scale=(0.85, 1.0)),
+        T.RandomHorizontalFlip(),
+        T.RandomVerticalFlip(),
+        T.RandomRotation(20),
+        T.ColorJitter(brightness=0.15, contrast=0.15),
+    ])
+
+    torch.manual_seed(0)
+    fig, axes = plt.subplots(1, 6, figsize=(16, 3.2))
+    axes[0].imshow(pil)
+    axes[0].set_title("model input\n(no augmentation)", fontsize=9)
+    axes[0].axis("off")
+    for ax in axes[1:]:
+        ax.imshow(train_tf(pil))
+        ax.set_title("augmented sample", fontsize=9)
+        ax.axis("off")
+
+    fig.suptitle(f"Training augmentations  |  Grade {grade} - {GRADES[grade]}  |  "
+                 "crop 0.85-1.0, h/v flip, +/-20 deg, brightness & contrast 0.15",
+                 fontsize=11.5, y=1.04)
+    fig.tight_layout()
+    fig.savefig(FIG / "08_augmentation.png", bbox_inches="tight")
     plt.close(fig)
 
 
@@ -306,30 +348,36 @@ def main():
     labels = pd.read_csv(LABELS)
     samples = sample_per_grade(labels)
 
-    print("sinif grafikleri...")
+    print("class figures...")
     fig_class_distribution(labels)
     fig_imbalance(labels)
 
-    print("auto-crop oncesi/sonrasi...")
+    print("auto-crop before/after...")
     fig_autocrop(samples)
 
-    print("CLAHE oncesi/sonrasi...")
+    print("CLAHE before/after...")
     fig_clahe(samples)
 
-    print("boru hatti asamalari...")
+    print("pipeline stages...")
     fig_pipeline(samples)
+
+    print("augmentations...")
+    try:
+        fig_augmentation(samples)
+    except ImportError:
+        print("  torch/torchvision not installed - 08 skipped")
 
     if STATS.exists():
         stats = pd.read_csv(STATS)
-        print("goruntu ozellikleri...")
+        print("image properties...")
         fig_image_properties(stats)
-        print("cozunurluk kisayolu...")
+        print("resolution shortcut...")
         fig_confound(stats, labels)
     else:
-        print("image_stats.csv yok - 06 ve 07 atlandi (once scan_images.py)")
+        print("image_stats.csv missing - 06 and 07 skipped (run scan_images.py)")
 
     files = sorted(FIG.glob("*.png"))
-    print(f"\n{len(files)} gorsel -> {FIG}")
+    print(f"\n{len(files)} figures -> {FIG}")
     for f in files:
         print(f"  {f.name}  ({f.stat().st_size // 1024} KB)")
 

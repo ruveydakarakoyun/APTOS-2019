@@ -1,21 +1,20 @@
-"""Kisayol ozellikleri ve etiket gurultusu analizi.
+"""Shortcut features and label noise.
 
-Bir goruntu siniflandirma modelinin yuksek skor almasi, dogru sebeple yuksek
-skor aldigi anlamina gelmez. Bu script iki soruyu yanitlar:
+A model scoring well does not mean it scores well for the right reason. This
+script answers two questions:
 
-1. KISAYOL: Model retinaya bakmadan ne kadar iyi olabilir? Yalnizca dosya
-   meta-verisinden (cozunurluk, en-boy orani, parlaklik, dosya boyutu) egitilen
-   bir siniflandirici bir taban olusturur. Bu taban yuksekse, gercek modelin
-   skorunun bir kismi teshisten degil cekim cihazinin imzasindan geliyor
-   olabilir.
+1. SHORTCUT: how well can a model do without looking at the retina? A
+   classifier trained only on file metadata (resolution, aspect ratio,
+   brightness, file size) sets a floor. If that floor is high, part of the real
+   model's score may come from the capture device rather than from pathology.
 
-2. ETIKET GURULTUSU: Ayni goruntunun birden fazla kez farkli etiketle
-   isaretlendigi durumlar, etiketleyiciler arasi uyumun alt siniri hakkinda
-   bilgi verir ve modelin ulasabilecegi tavani belirler.
+2. LABEL NOISE: where the same image appears twice with different labels, the
+   disagreement rate bounds inter-rater agreement from below and therefore
+   caps how well any model can do.
 
-Cikti: reports/confounds_and_noise.md
+Output: reports/confounds_and_noise.md
 
-Kullanim:
+Usage:
     python scripts/confound_analysis.py
 """
 import pathlib
@@ -39,7 +38,7 @@ META_COLS = ["width", "height", "aspect_ratio", "megapixels",
 
 
 def shortcut_baseline(m):
-    """Yalnizca meta-veriden egitilen siniflandirici - kisayol tabani."""
+    """Classifier trained on metadata only - the shortcut floor."""
     X, y = m[META_COLS].values, m.diagnosis.values
     clf = RandomForestClassifier(n_estimators=200, random_state=0, n_jobs=-1)
     pred = cross_val_predict(clf, X, y, cv=5, n_jobs=-1)
@@ -50,18 +49,17 @@ def shortcut_baseline(m):
     return {
         "accuracy": float((pred == y).mean()),
         "qwk": float(cohen_kappa_score(y, pred, weights="quadratic")),
-        "hep_sifir_acc": float((y == 0).mean()),
+        "all_zero_acc": float((y == 0).mean()),
         "importance": importance,
-        "pred": pred,
     }
 
 
 def label_noise(problems, labels):
-    """Duplicate ciftlerdeki etiket celiskilerinden gurultu tahmini."""
-    d = problems[problems.sorun == "duplicate"].merge(labels, on="id_code",
+    """Estimate label noise from disagreements between duplicate pairs."""
+    d = problems[problems.issue == "duplicate"].merge(labels, on="id_code",
                                                       suffixes=("", "_l"))
     pairs, conflicts, gaps = 0, 0, []
-    for _, g in d.groupby("deger"):
+    for _, g in d.groupby("value"):
         v = g.diagnosis.values
         for i in range(len(v)):
             for j in range(i + 1, len(v)):
@@ -74,13 +72,13 @@ def label_noise(problems, labels):
 
     agree = 1 - conflicts / pairs
     return {
-        "groups": d.deger.nunique(),
+        "groups": d.value.nunique(),
         "pairs": pairs,
         "conflicts": conflicts,
         "rate": conflicts / pairs,
         "agree": agree,
-        # Iki bagimsiz etiket p olasilikla dogruysa uyusma orani p^2 + (1-p)^2/4
-        # civarindadir; kaba bir yaklasim olarak sqrt(uyusma) kullaniyoruz.
+        # If two independent labels are each correct with probability p, the
+        # agreement rate is roughly p^2; sqrt(agreement) is a rough inversion.
         "single_label_acc": float(np.sqrt(agree)),
         "gap_dist": dict(pd.Series(gaps).value_counts().sort_index()) if gaps else {},
         "mean_gap": float(np.mean(gaps)) if gaps else 0.0,
@@ -88,104 +86,106 @@ def label_noise(problems, labels):
 
 
 def build(m, sc, ln):
-    md = ["# Kisayol Ozellikleri ve Etiket Gurultusu\n\n"]
-    md.append("Modelin skorunu dogru sebeple alip almadigini ve ulasabilecegi "
-              "tavani sorgulayan iki analiz.\n")
+    md = ["# Shortcut Features and Label Noise\n\n"]
+    md.append("Two analyses asking whether the model earns its score for the "
+              "right reason, and how high that score could possibly go.\n")
 
-    # ---------------------------------------------------------- kisayol
-    md.append("\n## 1. Meta-veri kisayolu\n\n")
-    md.append("Yalnizca dosya ozelliklerinden (cozunurluk, en-boy orani, parlaklik, "
-              "kontrast, dosya boyutu) egitilen bir RandomForest. **Retinaya hic "
-              "bakmiyor.** 5 katli capraz dogrulama.\n\n")
-    md.append("| olcut | meta-veri tabani | hep-0 tahmini |\n|---|---|---|\n")
-    md.append(f"| Accuracy | {sc['accuracy']:.4f} | {sc['hep_sifir_acc']:.4f} |\n")
+    # ---------------------------------------------------------- shortcut
+    md.append("\n## 1. The metadata shortcut\n\n")
+    md.append("A RandomForest trained only on file properties - resolution, "
+              "aspect ratio, brightness, contrast, file size. **It never looks "
+              "at the retina.** Five-fold cross-validation.\n\n")
+    md.append("| measure | metadata floor | always-predict-0 |\n|---|---|---|\n")
+    md.append(f"| Accuracy | {sc['accuracy']:.4f} | {sc['all_zero_acc']:.4f} |\n")
     md.append(f"| QWK | **{sc['qwk']:.4f}** | 0.0000 |\n")
 
-    md.append("\nEn ayirt edici meta-veri ozellikleri:\n\n")
-    md.append("| ozellik | onem |\n|---|---|\n")
+    md.append("\nMost informative metadata features:\n\n")
+    md.append("| feature | importance |\n|---|---|\n")
     for name, imp in sc["importance"][:5]:
         md.append(f"| `{name}` | {imp:.3f} |\n")
 
     sq = m[(m.width == 1050) & (m.height == 1050)]
     rest = m[~((m.width == 1050) & (m.height == 1050))]
-    md.append(f"\nKaynagi: en sik cozunurluk olan 1050x1050 goruntulerin "
-              f"**%{(sq.diagnosis == 0).mean() * 100:.1f}**'i `No DR`, "
-              f"diger cozunurluklerde bu oran **%{(rest.diagnosis == 0).mean() * 100:.1f}**.\n\n")
-    md.append(f"| evre | 1050x1050 (n={len(sq)}) | digerleri (n={len(rest)}) |\n|---|---|---|\n")
+    md.append(f"\nWhere it comes from: **{(sq.diagnosis == 0).mean() * 100:.1f}%** of "
+              f"the 1050x1050 images (the most common resolution) are `No DR`, "
+              f"against **{(rest.diagnosis == 0).mean() * 100:.1f}%** at every other "
+              "resolution.\n\n")
+    md.append(f"| grade | 1050x1050 (n={len(sq)}) | other (n={len(rest)}) |\n|---|---|---|\n")
     for g in range(5):
-        a = (sq.diagnosis == g).sum()
-        b = (rest.diagnosis == g).sum()
-        md.append(f"| {g} {GRADES[g]} | {a} (%{a / len(sq) * 100:.1f}) | "
-                  f"{b} (%{b / len(rest) * 100:.1f}) |\n")
+        a, b = (sq.diagnosis == g).sum(), (rest.diagnosis == g).sum()
+        md.append(f"| {g} {GRADES[g]} | {a} ({a / len(sq) * 100:.1f}%) | "
+                  f"{b} ({b / len(rest) * 100:.1f}%) |\n")
 
-    md.append("\n### Ne anlama geliyor\n\n")
-    md.append("APTOS verisi Hindistan'da birden fazla merkezde, farkli cihazlarla "
-              "toplandi. Cozunurluk cihazin imzasi ve cihaz ile hastalik yayginligi "
-              "arasinda guclu bir iliski var. Model yeniden boyutlandirilmis "
-              "goruntuleri gorse de en-boy orani, keskinlik ve kenar geometrisi bu "
-              "bilgiyi tasimaya devam eder.\n\n")
-    md.append(f"Bu, sonuclarin gecersiz oldugu anlamina gelmez; ama **QWK "
-              f"{sc['qwk']:.3f}'lik bir kismi teshis olmadan da elde edilebilir** "
-              "demektir. Rapor edilen skorlar bu taban ile birlikte okunmalidir.\n")
+    md.append("\n### What this means\n\n")
+    md.append("APTOS data was collected across several sites in India with "
+              "different cameras. Resolution is the device's signature, and "
+              "device correlates strongly with disease prevalence. Even though "
+              "the model sees resized images, aspect ratio, sharpness and edge "
+              "geometry still carry that information.\n\n")
+    md.append(f"This does not invalidate the results, but it does mean **QWK "
+              f"{sc['qwk']:.3f} is reachable without any diagnosis at all**. "
+              "Reported scores should be read alongside this floor.\n")
 
-    # ------------------------------------------------------ sinif ozellikleri
-    md.append("\n## 2. Sinif bazli goruntu ozellikleri\n\n")
-    md.append("| evre | n | parlaklik | kontrast | megapiksel | kare olan |\n"
+    # ------------------------------------------------------ class properties
+    md.append("\n## 2. Image properties by class\n\n")
+    md.append("| grade | n | brightness | contrast | megapixels | square |\n"
               "|---|---|---|---|---|---|\n")
     for g in range(5):
         s = m[m.diagnosis == g]
-        kare = ((s.aspect_ratio > 0.98) & (s.aspect_ratio < 1.02)).mean() * 100
+        square = ((s.aspect_ratio > 0.98) & (s.aspect_ratio < 1.02)).mean() * 100
         md.append(f"| {g} {GRADES[g]} | {len(s)} | {s.brightness.median():.1f} | "
                   f"{s.contrast_std.median():.1f} | {s.megapixels.median():.2f} | "
-                  f"%{kare:.0f} |\n")
+                  f"{square:.0f}% |\n")
 
-    md.append("\nKruskal-Wallis testi (siniflar arasi fark anlamli mi):\n\n")
-    md.append("| ozellik | p | sonuc |\n|---|---|---|\n")
+    md.append("\nKruskal-Wallis test for differences between classes:\n\n")
+    md.append("| feature | p | result |\n|---|---|---|\n")
     for col in ["brightness", "contrast_std", "megapixels"]:
-        groups = [m[m.diagnosis == g][col].values for g in range(5)]
-        _, p = st.kruskal(*groups)
-        md.append(f"| {col} | {p:.2e} | {'farkli' if p < 0.05 else 'fark yok'} |\n")
+        _, p = st.kruskal(*[m[m.diagnosis == g][col].values for g in range(5)])
+        md.append(f"| {col} | {p:.2e} | {'differs' if p < 0.05 else 'no difference'} |\n")
 
-    md.append("\n`No DR` goruntuleri medyan 1.10 megapiksel ve yarisi kare; "
-              "hasta siniflar 4-5 megapiksel ve neredeyse hicbiri kare degil. "
-              "Bu, yukaridaki kisayolun ta kendisi.\n")
+    md.append("\n`No DR` images have a median of 1.10 megapixels and half are "
+              "square; the diseased classes sit at 4-5 megapixels and almost "
+              "none are square. That is the shortcut, stated directly.\n")
 
-    # ------------------------------------------------------- etiket gurultusu
-    md.append("\n## 3. Etiket gurultusu\n\n")
+    # --------------------------------------------------------- label noise
+    md.append("\n## 3. Label noise\n\n")
     if ln is None:
-        md.append("Duplicate cift bulunamadi, tahmin yapilamiyor.\n")
+        md.append("No duplicate pairs found; no estimate possible.\n")
     else:
-        md.append("Ayni goruntu veri setinde birden fazla kez yer aliyorsa, "
-                  "etiketlerinin ayni olmasi beklenir. Olmadigi durumlar "
-                  "etiketleyiciler arasi uyumun alt sinirini verir.\n\n")
-        md.append("| olcut | deger |\n|---|---|\n")
-        md.append(f"| Dogrulanmis duplicate grup | {ln['groups']} |\n")
-        md.append(f"| Ayni goruntu cifti | {ln['pairs']} |\n")
-        md.append(f"| Etiketi celisen cift | {ln['conflicts']} (%{ln['rate'] * 100:.1f}) |\n")
-        md.append(f"| Ortalama celiski buyuklugu | {ln['mean_gap']:.2f} evre |\n")
-        md.append(f"| Uyusma orani | %{ln['agree'] * 100:.1f} |\n")
-        md.append(f"| Tek etiketin dogru olma tahmini | %{ln['single_label_acc'] * 100:.1f} |\n")
+        md.append("Where the same image appears more than once in the dataset, "
+                  "its labels should match. The cases where they do not give a "
+                  "lower bound on inter-rater agreement.\n\n")
+        md.append("| measure | value |\n|---|---|\n")
+        md.append(f"| Verified duplicate groups | {ln['groups']} |\n")
+        md.append(f"| Same-image pairs | {ln['pairs']} |\n")
+        md.append(f"| Pairs with conflicting labels | {ln['conflicts']} "
+                  f"({ln['rate'] * 100:.1f}%) |\n")
+        md.append(f"| Mean disagreement size | {ln['mean_gap']:.2f} grades |\n")
+        md.append(f"| Agreement rate | {ln['agree'] * 100:.1f}% |\n")
+        md.append(f"| Estimated single-label accuracy | "
+                  f"{ln['single_label_acc'] * 100:.1f}% |\n")
         if ln["gap_dist"]:
-            dagilim = ", ".join(f"{k} evre: {v}" for k, v in ln["gap_dist"].items())
-            md.append(f"\nCeliski buyuklugu dagilimi: {dagilim}.\n")
-        md.append(f"\n### Ne anlama geliyor\n\n")
-        md.append(f"Tek bir etiketin dogru olma olasiligi kabaca "
-                  f"**%{ln['single_label_acc'] * 100:.0f}**. Bu, mukemmel bir modelin "
-                  "bile bu veri setinde ulasabilecegi accuracy tavanini sinirlar. "
-                  "Mevcut modelin test accuracy'si 0.82 civarinda - yani tavana "
-                  "yakin. Kalan hatanin bir kismi modelin degil etiketlerin.\n\n")
-        md.append("Bu tahmin yalnizca duplicate goruntulerden turedigi icin "
-                  "**alt sinirdir**: tekrar etmeyen goruntulerdeki gurultuyu "
-                  "gormuyoruz.\n")
+            dist = ", ".join(f"{k} grade(s): {v}" for k, v in ln["gap_dist"].items())
+            md.append(f"\nDisagreement sizes: {dist}.\n")
+        md.append("\n### What this means\n\n")
+        md.append(f"A single label is correct roughly "
+                  f"**{ln['single_label_acc'] * 100:.0f}%** of the time. That caps "
+                  "the accuracy any model, however good, can reach on this "
+                  "dataset. The current model sits near 0.82 on test - close to "
+                  "the ceiling. Part of the remaining error belongs to the "
+                  "labels, not the model.\n\n")
+        md.append("This is a **lower bound**: it only measures noise visible in "
+                  "duplicated images, not in the rest of the dataset.\n")
 
-    md.append("\n---\n\nUretim: `python scripts/confound_analysis.py`\n")
+    md.append("\n---\n\nGenerated by `python scripts/confound_analysis.py`\n")
     return "".join(md)
 
 
 def main():
     for f in (STATS, LABELS, PROBLEMS):
         if not f.exists():
-            raise SystemExit(f"{f} yok - once scan_images.py ve quality_report.py calistirin")
+            raise SystemExit(f"{f} not found - run scan_images.py and "
+                             "quality_report.py first")
 
     stats = pd.read_csv(STATS)
     stats = stats[stats.readable]
@@ -194,15 +194,15 @@ def main():
 
     m = stats.merge(labels, on="id_code", suffixes=("", "_l"))
 
-    print("meta-veri kisayol tabani hesaplaniyor (5 katli CV)...")
+    print("computing the metadata shortcut floor (5-fold CV)...")
     sc = shortcut_baseline(m)
     print(f"  QWK={sc['qwk']:.4f}  accuracy={sc['accuracy']:.4f}")
 
-    print("etiket gurultusu tahmin ediliyor...")
+    print("estimating label noise...")
     ln = label_noise(problems, labels)
     if ln:
-        print(f"  celisen cift: {ln['conflicts']}/{ln['pairs']} "
-              f"(%{ln['rate'] * 100:.1f})")
+        print(f"  conflicting pairs: {ln['conflicts']}/{ln['pairs']} "
+              f"({ln['rate'] * 100:.1f}%)")
 
     REPORTS.mkdir(exist_ok=True)
     (REPORTS / "confounds_and_noise.md").write_text(build(m, sc, ln), encoding="utf-8")

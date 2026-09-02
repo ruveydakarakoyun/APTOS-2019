@@ -1,13 +1,13 @@
-"""Ham retina goruntulerinin ozelliklerini tarar ve BigQuery'ye yazar.
+"""Scan raw retina images for their properties and write them to BigQuery.
 
-Tek gecise her seyi cikarir: boyut, cozunurluk, en-boy orani, renk modu, kanal
-sayisi, parlaklik/kontrast istatistikleri ve algisal hash. Kalite raporu ve
-duplicate analizi (quality_report.py) bu tablodan turer - 8 GB'lik veri ikinci
-kez okunmaz.
+One pass extracts everything: dimensions, resolution, aspect ratio, colour mode,
+channel count, brightness/contrast statistics and a perceptual hash. The quality
+report (quality_report.py) and the confound analysis derive from this table, so
+the 8 GB of source images are read only once.
 
-Cikti: BigQuery `aptos_image_stats` + data/bq/image_stats.csv
+Output: BigQuery `aptos_image_stats` + data/bq/image_stats.csv
 
-Kullanim:
+Usage:
     python scripts/scan_images.py
     python scripts/scan_images.py --no-bq
 """
@@ -40,13 +40,14 @@ def scan_one(args):
 
     img = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if img is None:
-        row["error"] = "okunamadi"
+        row["error"] = "unreadable"
         return row
 
     h, w = img.shape[:2]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # Renk modu: uc kanal esitse dosya RGB olsa da icerik gri tonlamadir
+    # Colour mode is judged by content, not by file format: an image whose three
+    # channels are identical is grayscale even if stored as RGB.
     b, g, r = cv2.split(img)
     is_gray = bool((b == g).all() and (g == r).all())
 
@@ -83,10 +84,10 @@ def main():
     jobs = []
     for split, d in SOURCE_DIRS.items():
         if not d.exists():
-            raise SystemExit(f"{d} yok - once Kaggle indirmesini tamamlayin")
+            raise SystemExit(f"{d} not found - download the Kaggle data first")
         jobs += [(p, split) for p in sorted(d.glob("*.png"))]
 
-    print(f"{len(jobs)} goruntu taraniyor, {args.workers} surec...")
+    print(f"scanning {len(jobs)} images with {args.workers} workers...")
 
     rows, done = [], 0
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
@@ -101,26 +102,26 @@ def main():
     out = ROOT / "data" / "bq" / "image_stats.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out, index=False)
-    print(f"\n{len(df)} satir -> {out}")
+    print(f"\n{len(df)} rows -> {out}")
 
     ok = df[df.readable]
-    print(f"\nokunabilir: {len(ok)}/{len(df)}")
-    print(f"renk modu : {ok.color_mode.value_counts().to_dict()}")
-    print(f"kanal     : {ok.channels.value_counts().to_dict()}")
-    print("\ncozunurluk:")
-    print(f"  genislik  {ok.width.min()}-{ok.width.max()}  (medyan {int(ok.width.median())})")
-    print(f"  yukseklik {ok.height.min()}-{ok.height.max()}  (medyan {int(ok.height.median())})")
-    print(f"  megapiksel {ok.megapixels.min():.2f}-{ok.megapixels.max():.2f}")
-    print(f"  en-boy     {ok.aspect_ratio.min():.3f}-{ok.aspect_ratio.max():.3f}")
-    print(f"  farkli cozunurluk sayisi: {ok.groupby(['width','height']).ngroups}")
-    print("\nen sik 5 cozunurluk:")
+    print(f"\nreadable    : {len(ok)}/{len(df)}")
+    print(f"colour mode : {ok.color_mode.value_counts().to_dict()}")
+    print(f"channels    : {ok.channels.value_counts().to_dict()}")
+    print("\nresolution:")
+    print(f"  width      {ok.width.min()}-{ok.width.max()}  (median {int(ok.width.median())})")
+    print(f"  height     {ok.height.min()}-{ok.height.max()}  (median {int(ok.height.median())})")
+    print(f"  megapixels {ok.megapixels.min():.2f}-{ok.megapixels.max():.2f}")
+    print(f"  aspect     {ok.aspect_ratio.min():.3f}-{ok.aspect_ratio.max():.3f}")
+    print(f"  distinct resolutions: {ok.groupby(['width','height']).ngroups}")
+    print("\nfive most common resolutions:")
     for (w, h), n in ok.groupby(["width", "height"]).size().nlargest(5).items():
         print(f"  {w}x{h}  {n}")
-    print(f"\nparlaklik : {ok.brightness.min():.1f}-{ok.brightness.max():.1f} "
-          f"(ort {ok.brightness.mean():.1f})")
-    print(f"kontrast  : {ok.contrast_std.min():.1f}-{ok.contrast_std.max():.1f} "
-          f"(ort {ok.contrast_std.mean():.1f})")
-    print(f"auto-crop ile kazanilan alan: ortalama %{ok.crop_saving.mean() * 100:.1f}")
+    print(f"\nbrightness: {ok.brightness.min():.1f}-{ok.brightness.max():.1f} "
+          f"(mean {ok.brightness.mean():.1f})")
+    print(f"contrast  : {ok.contrast_std.min():.1f}-{ok.contrast_std.max():.1f} "
+          f"(mean {ok.contrast_std.mean():.1f})")
+    print(f"area removed by auto-crop: {ok.crop_saving.mean() * 100:.1f}% on average")
 
     if args.no_bq:
         return
@@ -133,7 +134,7 @@ def main():
         clustering_fields=["split"],
     )
     client.load_table_from_dataframe(df, table_id, job_config=cfg).result()
-    print(f"\n{table_id} <- {len(df)} satir")
+    print(f"\n{table_id} <- {len(df)} rows")
 
 
 if __name__ == "__main__":
