@@ -15,3 +15,8 @@ data/
 *.png
 *.jpg
 *.csv
+
+# Model ağırlıklarının ve checkpoint dosyalarının GitHub'a gitmesini engellemek için
+checkpoints/
+*.pth
+*.ckpt
