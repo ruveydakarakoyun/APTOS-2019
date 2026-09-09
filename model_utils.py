@@ -5,6 +5,8 @@ from torchvision.models import resnet50, ResNet50_Weights
 import torchvision.transforms as T
 import numpy as np
 
+from dataset import auto_crop, apply_clahe
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 CHECKPOINT_PATH = "checkpoints/resnet50_best_model.pth"
 
@@ -24,13 +26,28 @@ def load_model():
     model.eval()
     return model
 
+
+# Sadece resize + tensor + normalize (auto-crop/CLAHE zaten uygulanmış görüntü için)
+_final_transform = T.Compose([
+    T.ToPILImage(),
+    T.Resize((224, 224)),
+    T.ToTensor(),
+    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+
 def preprocess_image(image):
-    transform = T.Compose([
-        T.Resize((224, 224)),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    return transform(image).unsqueeze(0).to(DEVICE)
+    """
+    Eğitimde kullanılan ön işleme sırasıyla aynı: Auto-Crop -> CLAHE -> Resize/Normalize.
+    `image` bir PIL Image olmalı (RGB).
+    """
+    image_np = np.array(image.convert("RGB"))
+    cropped_image = auto_crop(image_np, threshold=10, padding=5)
+    clahe_image = apply_clahe(cropped_image)
+
+    input_tensor = _final_transform(clahe_image).unsqueeze(0).to(DEVICE)
+    return input_tensor
+
 
 def predict(model, input_tensor):
     with torch.no_grad():

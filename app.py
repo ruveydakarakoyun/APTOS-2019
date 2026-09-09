@@ -23,7 +23,7 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
-    st.image(image, caption="Yüklenen Orijinal Görsel", use_column_width=True)
+    st.image(image, caption="Yüklenen Orijinal Görsel", width="stretch")
 
     if st.button("Analiz Et"):
         with st.spinner("Model analiz ediyor..."):
@@ -42,4 +42,4 @@ if uploaded_file is not None:
             # Grad-CAM (Mock / Gerçek)
             st.subheader("Grad-CAM Isı Haritası")
             cam_image = generate_gradcam(model, input_tensor, target_class=predicted_class)
-            st.image(cam_image, caption="Modelin Odak Noktaları", use_column_width=True)
+            st.image(cam_image, caption="Modelin Odak Noktaları", width="stretch")
