@@ -48,7 +48,7 @@ st.markdown("""
 st.markdown("""
 <div class="main-header">
     <h2>👁️ Diyabetik Retinopati Analizi</h2>
-    <p style="color: #666; font-size: 16px;">Retina fotoğraflarınızı yükleyin, yapay zeka modeli görüntüleri değerlendirerek diyabetik retinopati düzeyini tahmin etsin.</p>
+    <p style="color: #666; font-size: 16px;">Retina görüntüsünü yükleyin; diyabetik retinopati seviyesini analiz edin ve dikkat çeken bölgeleri görüntüleyin.</p>
     <span style="background-color: #ede9fe; color: #6d28d9; padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 600;">APTOS 2019 • AI-assisted screening</span>
 </div>
 """, unsafe_allow_html=True)
